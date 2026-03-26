@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue';
 import { searchRecipes, fetchRecipe, findRecipeIdByName, preloadRecipeIndex } from './utils/recipes.js';
 import { fetchMarketPrice, fetchMarketPrices } from './utils/arsha.js';
+import RecipeMaterial from './components/RecipeMaterial.vue';
 
 const tab = ref('marketplace');
 const recipeIndexReady = ref(false);
@@ -168,8 +169,9 @@ const initAndFetchPrice = (itemId) => {
   }
 };
 
-// Auto-expand a single material's sub-recipe + fetch all its sub-prices
-const autoExpandSubRecipe = async (material) => {
+// Auto-expand a material's sub-recipe recursively (depth-limited to prevent infinite loops)
+const autoExpandSubRecipe = async (material, depth = 0) => {
+  if (depth > 5) return; // safety limit
   const key = material.itemId;
   if (subRecipes.value[key]?.recipe) return; // already loaded
 
@@ -186,6 +188,9 @@ const autoExpandSubRecipe = async (material) => {
       for (const sm of recipe.materials) {
         initAndFetchPrice(sm.itemId);
       }
+      // Recursively expand any craftable sub-materials
+      const craftableSubs = recipe.materials.filter(sm => sm.hasRecipe);
+      await Promise.all(craftableSubs.map(sm => autoExpandSubRecipe(sm, depth + 1)));
     }
   } catch {
     subRecipes.value[key].loading = false;
@@ -256,19 +261,16 @@ const loadPrices = async () => {
   recipePricesLoading.value = false;
 };
 
-// Helper: get cost of a single material (uses sub-recipe if expanded, otherwise direct price)
-const getMatCost = (m) => {
+// Helper: get cost of a single material (recursive — walks sub-recipe tree)
+const getMatCost = (m, depth = 0) => {
+  if (depth > 6) return 0; // safety
   const s = materialState.value[m.itemId];
   if (!s || s.source === 'gathered') return 0;
 
   // If sub-recipe is expanded, use sub-material costs instead of the item's market price
   const sub = subRecipes.value[m.itemId];
   if (sub?.expanded && sub?.recipe?.materials?.length) {
-    const subCost = sub.recipe.materials.reduce((sum, sm) => {
-      const ss = materialState.value[sm.itemId];
-      if (!ss || ss.source === 'gathered') return sum;
-      return sum + (ss.price || 0) * (sm.qty || 1);
-    }, 0);
+    const subCost = sub.recipe.materials.reduce((sum, sm) => sum + getMatCost(sm, depth + 1), 0);
     return subCost * (m.qty || 1);
   }
 
@@ -285,13 +287,16 @@ const recipeTotalCost = computed(() => {
 const recipeMarketCost = computed(() => recipeTotalCost.value);
 const recipeGatheredCount = computed(() => {
   if (!selectedRecipe.value) return 0;
-  let count = selectedRecipe.value.materials.filter(m => materialState.value[m.itemId]?.source === 'gathered').length;
-  // Count sub-recipe gathered materials too
-  for (const sub of Object.values(subRecipes.value)) {
-    if (sub?.recipe?.materials) {
-      count += sub.recipe.materials.filter(sm => materialState.value[sm.itemId]?.source === 'gathered').length;
+  // Count all gathered materials across all sub-recipe depths
+  let count = 0;
+  const countGathered = (materials) => {
+    for (const m of materials) {
+      if (materialState.value[m.itemId]?.source === 'gathered') count++;
+      const sub = subRecipes.value[m.itemId];
+      if (sub?.expanded && sub?.recipe?.materials) countGathered(sub.recipe.materials);
     }
-  }
+  };
+  countGathered(selectedRecipe.value.materials);
   return count;
 });
 
@@ -631,110 +636,19 @@ const silver = (n) => {
             </div>
           </div>
 
-          <!-- Materials -->
+          <!-- Materials (recursive component for unlimited nesting) -->
           <h4 class="sub-heading">Materials ({{ selectedRecipe.materials.length }} items)</h4>
           <div class="recipe-mat-list">
-            <template v-for="m in selectedRecipe.materials" :key="m.itemId">
-              <div
-                class="recipe-mat-row"
-                :class="{ 'recipe-mat-row--gathered': materialState[m.itemId]?.source === 'gathered' }"
-              >
-                <div class="recipe-mat-info">
-                  <button
-                    v-if="m.hasRecipe"
-                    class="recipe-expand-btn"
-                    @click="toggleSubRecipe(m)"
-                    :title="subRecipes[m.itemId]?.expanded ? 'Collapse sub-recipe' : 'Expand sub-recipe'"
-                  >
-                    {{ subRecipes[m.itemId]?.expanded ? '▼' : '▶' }}
-                  </button>
-                  <span v-else class="recipe-expand-spacer"></span>
-                  <button
-                    class="recipe-source-toggle"
-                    :class="materialState[m.itemId]?.source === 'gathered' ? 'source-gathered' : 'source-market'"
-                    @click="materialState[m.itemId].source = materialState[m.itemId].source === 'market' ? 'gathered' : 'market'"
-                    :title="materialState[m.itemId]?.source === 'gathered' ? 'Self-gathered (free) — click to switch to Market' : 'Bought on Market — click to switch to Self-gathered'"
-                  >
-                    {{ materialState[m.itemId]?.source === 'gathered' ? 'Gathered' : 'Market' }}
-                  </button>
-                  <span class="recipe-mat-name" :class="{ 'recipe-mat-gathered-name': materialState[m.itemId]?.source === 'gathered', 'recipe-mat-name--craftable': m.hasRecipe }">
-                    {{ m.name }}
-                  </span>
-                  <span class="recipe-mat-qty">x{{ m.qty }}</span>
-                  <span v-if="m.isGroup" class="recipe-mat-tag tag-group" title="Can be substituted with similar items">sub</span>
-                  <span v-if="m.isLocked" class="recipe-mat-tag tag-locked" title="Cannot be substituted">fixed</span>
-                  <span v-if="m.hasRecipe" class="recipe-mat-tag tag-craftable">recipe</span>
-                </div>
-                <div class="recipe-mat-price">
-                  <template v-if="materialState[m.itemId]?.source === 'gathered'">
-                    <span class="recipe-mat-free">Free (self-gathered)</span>
-                  </template>
-                  <template v-else>
-                    <span v-if="materialState[m.itemId]?.priceSource === 'npc'" class="recipe-mat-tag tag-npc">NPC</span>
-                    <input
-                      type="number"
-                      class="recipe-price-input"
-                      :value="materialState[m.itemId]?.price"
-                      @input="materialState[m.itemId].price = Number($event.target.value) || null"
-                      placeholder="Price each"
-                    />
-                    <span class="recipe-mat-line-total">
-                      = {{ silver((materialState[m.itemId]?.price || 0) * m.qty) }}
-                    </span>
-                  </template>
-                </div>
-              </div>
-
-              <!-- Sub-recipe (expanded) -->
-              <div v-if="subRecipes[m.itemId]?.expanded" class="sub-recipe-wrap">
-                <div v-if="subRecipes[m.itemId]?.loading" class="sub-recipe-loading">Loading sub-recipe...</div>
-                <div v-else-if="subRecipes[m.itemId]?.recipe" class="sub-recipe-content">
-                  <div class="sub-recipe-header">
-                    {{ subRecipes[m.itemId].recipe.name }}
-                    <span v-if="subRecipes[m.itemId].recipe.category" class="recipe-badge" style="font-size:0.6rem;">{{ subRecipes[m.itemId].recipe.category }}</span>
-                  </div>
-                  <div
-                    v-for="sm in subRecipes[m.itemId].recipe.materials"
-                    :key="sm.itemId"
-                    class="sub-recipe-mat-row"
-                    :class="{ 'recipe-mat-row--gathered': materialState[sm.itemId]?.source === 'gathered' }"
-                  >
-                    <div class="recipe-mat-info">
-                      <button
-                        class="recipe-source-toggle recipe-source-toggle--sm"
-                        :class="materialState[sm.itemId]?.source === 'gathered' ? 'source-gathered' : 'source-market'"
-                        @click="materialState[sm.itemId] && (materialState[sm.itemId].source = materialState[sm.itemId].source === 'market' ? 'gathered' : 'market')"
-                      >
-                        {{ materialState[sm.itemId]?.source === 'gathered' ? 'Gathered' : 'Market' }}
-                      </button>
-                      <span class="recipe-mat-name" :class="{ 'recipe-mat-gathered-name': materialState[sm.itemId]?.source === 'gathered' }">
-                        {{ sm.name }}
-                      </span>
-                      <span class="recipe-mat-qty">x{{ sm.qty }}</span>
-                    </div>
-                    <div class="recipe-mat-price">
-                      <template v-if="materialState[sm.itemId]?.source === 'gathered'">
-                        <span class="recipe-mat-free">Free</span>
-                      </template>
-                      <template v-else-if="materialState[sm.itemId]">
-                        <span v-if="materialState[sm.itemId]?.priceSource === 'npc'" class="recipe-mat-tag tag-npc">NPC</span>
-                        <input
-                          type="number"
-                          class="recipe-price-input recipe-price-input--sm"
-                          :value="materialState[sm.itemId]?.price"
-                          @input="materialState[sm.itemId].price = Number($event.target.value) || null"
-                          placeholder="Price"
-                        />
-                        <span class="recipe-mat-line-total">
-                          = {{ silver((materialState[sm.itemId]?.price || 0) * sm.qty) }}
-                        </span>
-                      </template>
-                    </div>
-                  </div>
-                </div>
-                <div v-else class="sub-recipe-loading">No recipe found for {{ m.name }}</div>
-              </div>
-            </template>
+            <RecipeMaterial
+              v-for="m in selectedRecipe.materials"
+              :key="m.itemId"
+              :material="m"
+              :materialState="materialState"
+              :subRecipes="subRecipes"
+              :silver="silver"
+              :toggleSubRecipe="toggleSubRecipe"
+              :depth="0"
+            />
           </div>
 
           <!-- Refresh prices button -->
