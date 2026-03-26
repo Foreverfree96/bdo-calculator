@@ -1,5 +1,7 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
+import { searchRecipes, fetchRecipe } from './utils/recipes.js';
+import { fetchMarketPrice, fetchMarketPrices } from './utils/arsha.js';
 
 const tab = ref('marketplace');
 
@@ -53,11 +55,11 @@ const enhance = ref({
   baseItemCost: null,
   targetSellPrice: null,
   hasValuePack: true,
-  successRate: null, // percentage 0-100
-  failstackCost: null, // cost to build the failstack
-  cronStoneCost: null, // cost per cron stone (0 if not using)
-  cronStonesNeeded: 0, // number of crons per attempt
-  repairCost: null, // repair cost on failure (memory fragments etc)
+  successRate: null,
+  failstackCost: null,
+  cronStoneCost: null,
+  cronStonesNeeded: 0,
+  repairCost: null,
   attemptsToSimulate: 10,
 });
 
@@ -89,7 +91,6 @@ const enhROI = computed(() => {
   return ((enhExpectedProfit.value / enhExpectedTotalCost.value) * 100).toFixed(1);
 });
 
-// Simulation table
 const enhSimRows = computed(() => {
   const rows = [];
   let cumulativeCost = enhance.value.baseItemCost || 0;
@@ -107,6 +108,134 @@ const enhSimRows = computed(() => {
   }
   return rows;
 });
+
+// ─── RECIPE LOOKUP ───────────────────────────────────────────────────────────
+const recipeQuery = ref('');
+const recipeResults = ref([]);
+const recipeSearching = ref(false);
+const selectedRecipe = ref(null);
+const recipeLoading = ref(false);
+const recipeRegion = ref('na');
+const recipeHasValuePack = ref(true);
+const recipePricesLoading = ref(false);
+const recipeError = ref('');
+const showRecipeDropdown = ref(false);
+
+// Material state: keyed by itemId → { selfGathered, price, priceLoading }
+const materialState = ref({});
+
+let searchTimeout = null;
+const onRecipeSearch = () => {
+  clearTimeout(searchTimeout);
+  if (!recipeQuery.value || recipeQuery.value.length < 2) {
+    recipeResults.value = [];
+    showRecipeDropdown.value = false;
+    return;
+  }
+  searchTimeout = setTimeout(async () => {
+    recipeSearching.value = true;
+    recipeError.value = '';
+    try {
+      recipeResults.value = await searchRecipes(recipeQuery.value);
+      showRecipeDropdown.value = recipeResults.value.length > 0;
+    } catch { recipeError.value = 'Search failed'; }
+    recipeSearching.value = false;
+  }, 400);
+};
+
+const selectRecipe = async (recipe) => {
+  showRecipeDropdown.value = false;
+  recipeQuery.value = recipe.name;
+  recipeLoading.value = true;
+  recipeError.value = '';
+  selectedRecipe.value = null;
+  materialState.value = {};
+
+  try {
+    const data = await fetchRecipe(recipe.id);
+    if (!data || !data.materials.length) {
+      recipeError.value = 'Could not load recipe materials. Try again.';
+      recipeLoading.value = false;
+      return;
+    }
+    selectedRecipe.value = data;
+
+    // Init material state
+    const state = {};
+    for (const m of data.materials) {
+      state[m.itemId] = { selfGathered: false, price: null, priceLoading: true };
+    }
+    // Also init for result items (to show sell price)
+    for (const r of data.results) {
+      state[r.itemId] = { selfGathered: false, price: null, priceLoading: true };
+    }
+    materialState.value = state;
+    recipeLoading.value = false;
+
+    // Fetch market prices
+    await loadPrices();
+  } catch (err) {
+    recipeError.value = 'Failed to load recipe: ' + (err.message || 'unknown error');
+    recipeLoading.value = false;
+  }
+};
+
+const loadPrices = async () => {
+  if (!selectedRecipe.value) return;
+  recipePricesLoading.value = true;
+
+  const allIds = [
+    ...selectedRecipe.value.materials.map(m => m.itemId),
+    ...selectedRecipe.value.results.map(r => r.itemId),
+  ];
+
+  // Fetch each price individually (Arsha.io has no batch)
+  const promises = allIds.map(async (id) => {
+    if (!materialState.value[id]) return;
+    materialState.value[id].priceLoading = true;
+    const data = await fetchMarketPrice(id, recipeRegion.value);
+    if (materialState.value[id]) {
+      materialState.value[id].price = data?.price || null;
+      materialState.value[id].priceLoading = false;
+    }
+  });
+
+  await Promise.all(promises);
+  recipePricesLoading.value = false;
+};
+
+// Computed: total material cost
+const recipeTotalCost = computed(() => {
+  if (!selectedRecipe.value) return 0;
+  return selectedRecipe.value.materials.reduce((sum, m) => {
+    const s = materialState.value[m.itemId];
+    if (!s || s.selfGathered) return sum;
+    return sum + (s.price || 0) * (m.qty || 1);
+  }, 0);
+});
+
+// Computed: sell revenue (first result item)
+const recipeTaxRate = computed(() => recipeHasValuePack.value ? 0.155 : 0.35);
+const recipeSellPrice = computed(() => {
+  if (!selectedRecipe.value?.results?.length) return 0;
+  const firstResult = selectedRecipe.value.results[0];
+  const s = materialState.value[firstResult.itemId];
+  return s?.price || 0;
+});
+const recipeSellRevenue = computed(() => Math.floor(recipeSellPrice.value * (1 - recipeTaxRate.value)));
+const recipeProfit = computed(() => recipeSellRevenue.value - recipeTotalCost.value);
+const recipeROI = computed(() => {
+  if (!recipeTotalCost.value) return 0;
+  return ((recipeProfit.value / recipeTotalCost.value) * 100).toFixed(1);
+});
+
+const clearRecipe = () => {
+  selectedRecipe.value = null;
+  recipeQuery.value = '';
+  recipeResults.value = [];
+  materialState.value = {};
+  recipeError.value = '';
+};
 
 // ─── FORMATTING ──────────────────────────────────────────────────────────────
 const silver = (n) => {
@@ -131,6 +260,7 @@ const silver = (n) => {
       <button :class="['tab', { active: tab === 'marketplace' }]" @click="tab = 'marketplace'">Marketplace</button>
       <button :class="['tab', { active: tab === 'crafting' }]" @click="tab = 'crafting'">Crafting</button>
       <button :class="['tab', { active: tab === 'enhancement' }]" @click="tab = 'enhancement'">Enhancement</button>
+      <button :class="['tab', { active: tab === 'recipes' }]" @click="tab = 'recipes'">Recipes</button>
     </nav>
 
     <main class="content">
@@ -304,7 +434,6 @@ const silver = (n) => {
           </div>
         </div>
 
-        <!-- Simulation Table -->
         <h3 class="sub-heading">Attempt Simulation</h3>
         <div class="sim-table-wrap">
           <table class="sim-table">
@@ -325,6 +454,154 @@ const silver = (n) => {
               </tr>
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <!-- ═══ RECIPE LOOKUP ═══ -->
+      <section v-if="tab === 'recipes'" class="calc-section">
+        <h2>Recipe Lookup</h2>
+        <p class="hint" style="margin-bottom: 12px;">Search any cooking, alchemy, or processing recipe. Prices from BDO Central Market (NA).</p>
+
+        <div class="recipe-controls">
+          <label class="toggle-row">
+            <input type="checkbox" v-model="recipeHasValuePack" />
+            <span>Value Pack active <span class="hint">({{ recipeHasValuePack ? '15.5%' : '35%' }} tax)</span></span>
+          </label>
+
+          <div class="field" style="margin-bottom: 4px;">
+            <label>Region</label>
+            <select v-model="recipeRegion" class="region-select">
+              <option value="na">NA</option>
+              <option value="eu">EU</option>
+              <option value="sea">SEA</option>
+              <option value="sa">SA</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Search -->
+        <div class="recipe-search-wrap">
+          <input
+            v-model="recipeQuery"
+            @input="onRecipeSearch"
+            @focus="showRecipeDropdown = recipeResults.length > 0"
+            class="recipe-search"
+            placeholder="Search recipes... (e.g. Beer, Elixir of Fury, Plywood)"
+          />
+          <span v-if="recipeSearching" class="recipe-spinner">Searching...</span>
+          <button v-if="selectedRecipe" class="recipe-clear" @click="clearRecipe">Clear</button>
+
+          <!-- Dropdown -->
+          <div v-if="showRecipeDropdown && !selectedRecipe" class="recipe-dropdown">
+            <div
+              v-for="r in recipeResults.slice(0, 20)"
+              :key="r.id"
+              class="recipe-dropdown-item"
+              @mousedown.prevent="selectRecipe(r)"
+            >
+              <span class="recipe-dropdown-name">{{ r.name }}</span>
+              <span class="recipe-dropdown-cat">{{ r.category }}</span>
+            </div>
+          </div>
+        </div>
+
+        <p v-if="recipeError" class="recipe-error">{{ recipeError }}</p>
+
+        <!-- Loading -->
+        <div v-if="recipeLoading" class="recipe-loading">Loading recipe...</div>
+
+        <!-- Recipe details -->
+        <div v-if="selectedRecipe && !recipeLoading" class="recipe-details">
+          <div class="recipe-header-info">
+            <h3>{{ selectedRecipe.name }}</h3>
+            <div class="recipe-meta">
+              <span v-if="selectedRecipe.category" class="recipe-badge">{{ selectedRecipe.category }}</span>
+              <span v-if="selectedRecipe.skillLevel" class="recipe-badge recipe-badge-skill">{{ selectedRecipe.skillLevel }}</span>
+            </div>
+          </div>
+
+          <!-- Crafting Results -->
+          <div v-if="selectedRecipe.results.length" class="recipe-results-section">
+            <h4 class="sub-heading">Crafting Result</h4>
+            <div v-for="r in selectedRecipe.results" :key="r.itemId" class="recipe-result-row">
+              <span class="recipe-result-name">{{ r.name }}</span>
+              <span class="recipe-result-qty">x{{ r.qty }}</span>
+              <span class="recipe-result-price" v-if="materialState[r.itemId]">
+                <template v-if="materialState[r.itemId].priceLoading">loading...</template>
+                <template v-else-if="materialState[r.itemId].price">{{ silver(materialState[r.itemId].price) }}</template>
+                <template v-else>no price</template>
+              </span>
+            </div>
+          </div>
+
+          <!-- Materials -->
+          <h4 class="sub-heading">Materials</h4>
+          <div class="recipe-mat-list">
+            <div v-for="m in selectedRecipe.materials" :key="m.itemId" class="recipe-mat-row">
+              <div class="recipe-mat-info">
+                <label class="recipe-mat-gathered">
+                  <input
+                    type="checkbox"
+                    :checked="materialState[m.itemId]?.selfGathered"
+                    @change="materialState[m.itemId].selfGathered = $event.target.checked"
+                  />
+                  <span class="recipe-mat-gathered-label">Self</span>
+                </label>
+                <span class="recipe-mat-name" :class="{ 'recipe-mat-gathered-name': materialState[m.itemId]?.selfGathered }">
+                  {{ m.name }}
+                </span>
+                <span class="recipe-mat-qty">x{{ m.qty }}</span>
+                <span v-if="m.isGroup" class="recipe-mat-tag tag-group" title="Can be substituted with similar items">sub</span>
+                <span v-if="m.isLocked" class="recipe-mat-tag tag-locked" title="Cannot be substituted">fixed</span>
+              </div>
+              <div class="recipe-mat-price">
+                <template v-if="materialState[m.itemId]?.selfGathered">
+                  <span class="recipe-mat-free">Free</span>
+                </template>
+                <template v-else>
+                  <input
+                    type="number"
+                    class="recipe-price-input"
+                    :value="materialState[m.itemId]?.price"
+                    @input="materialState[m.itemId].price = Number($event.target.value) || null"
+                    placeholder="Price each"
+                  />
+                  <span class="recipe-mat-line-total">
+                    = {{ silver((materialState[m.itemId]?.price || 0) * m.qty) }}
+                  </span>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <!-- Refresh prices button -->
+          <button class="btn-refresh-prices" @click="loadPrices" :disabled="recipePricesLoading">
+            {{ recipePricesLoading ? 'Loading prices...' : 'Refresh Market Prices' }}
+          </button>
+
+          <!-- Summary -->
+          <div class="results-card" style="margin-top: 16px;">
+            <div class="result-row">
+              <span>Total Material Cost</span>
+              <span class="val">{{ silver(recipeTotalCost) }}</span>
+            </div>
+            <div class="result-row">
+              <span>Sell Price ({{ selectedRecipe.results[0]?.name || 'result' }})</span>
+              <span class="val">{{ silver(recipeSellPrice) }}</span>
+            </div>
+            <div class="result-row">
+              <span>Revenue After Tax ({{ recipeHasValuePack ? '15.5%' : '35%' }})</span>
+              <span class="val">{{ silver(recipeSellRevenue) }}</span>
+            </div>
+            <div class="result-row highlight" :class="recipeProfit >= 0 ? '' : 'loss-row'">
+              <span>Profit Per Craft</span>
+              <span class="val" :class="recipeProfit >= 0 ? 'profit' : 'loss'">{{ silver(recipeProfit) }}</span>
+            </div>
+            <div class="result-row">
+              <span>ROI</span>
+              <span class="val" :class="recipeROI >= 0 ? 'profit' : 'loss'">{{ recipeROI }}%</span>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -367,11 +644,11 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .field-row { display: flex; gap: 12px; margin-bottom: 12px; }
 .field { flex: 1; display: flex; flex-direction: column; gap: 4px; }
 .field label { font-size: 0.75rem; color: #999; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
-.field input {
+.field input, .field select {
   padding: 10px 12px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
   color: #fff; font-size: 0.95rem; transition: border-color 0.2s;
 }
-.field input:focus { outline: none; border-color: #f59e0b; }
+.field input:focus, .field select:focus { outline: none; border-color: #f59e0b; }
 
 .sub-heading { font-size: 0.95rem; font-weight: 600; color: #ccc; margin: 16px 0 10px; }
 
@@ -423,10 +700,109 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 }
 .sim-table tr:hover { background: #1a1a1a; }
 
+/* ── Recipe Lookup ── */
+.recipe-controls {
+  display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 12px;
+}
+.region-select {
+  padding: 8px 12px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+  color: #fff; font-size: 0.85rem;
+}
+
+.recipe-search-wrap { position: relative; margin-bottom: 12px; }
+.recipe-search {
+  width: 100%; padding: 12px 14px; background: #1a1a1a; border: 1px solid #333;
+  border-radius: 10px; color: #fff; font-size: 1rem; transition: border-color 0.2s;
+}
+.recipe-search:focus { outline: none; border-color: #f59e0b; }
+.recipe-spinner { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: #888; font-size: 0.8rem; }
+.recipe-clear {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  background: #333; border: none; color: #ccc; padding: 4px 10px; border-radius: 6px;
+  cursor: pointer; font-size: 0.8rem;
+}
+.recipe-clear:hover { background: #444; }
+
+.recipe-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 100;
+  background: #1e1e1e; border: 1px solid #333; border-radius: 0 0 10px 10px;
+  max-height: 300px; overflow-y: auto;
+}
+.recipe-dropdown-item {
+  padding: 10px 14px; cursor: pointer; display: flex; justify-content: space-between;
+  align-items: center; border-bottom: 1px solid #2a2a2a; transition: background 0.15s;
+}
+.recipe-dropdown-item:hover { background: #2a2a2a; }
+.recipe-dropdown-item:last-child { border-bottom: none; }
+.recipe-dropdown-name { color: #fff; font-weight: 600; font-size: 0.9rem; }
+.recipe-dropdown-cat { color: #888; font-size: 0.75rem; text-transform: uppercase; }
+
+.recipe-error { color: #ef4444; font-size: 0.85rem; margin: 8px 0; }
+.recipe-loading { color: #888; font-size: 0.9rem; padding: 20px 0; text-align: center; }
+
+.recipe-header-info { margin-bottom: 12px; }
+.recipe-header-info h3 { font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
+.recipe-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+.recipe-badge {
+  background: #2a2a2a; color: #f59e0b; font-size: 0.7rem; font-weight: 700;
+  padding: 3px 10px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.recipe-badge-skill { color: #60a5fa; }
+
+.recipe-results-section { margin-bottom: 8px; }
+.recipe-result-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 0;
+  font-size: 0.9rem;
+}
+.recipe-result-name { color: #22c55e; font-weight: 600; }
+.recipe-result-qty { color: #888; font-size: 0.8rem; }
+.recipe-result-price { color: #f59e0b; font-family: 'Consolas', monospace; font-size: 0.85rem; }
+
+.recipe-mat-list { display: flex; flex-direction: column; gap: 6px; }
+.recipe-mat-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 8px 12px; background: #161616; border: 1px solid #222; border-radius: 8px;
+  flex-wrap: wrap;
+}
+.recipe-mat-info { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 200px; }
+.recipe-mat-gathered { display: flex; align-items: center; gap: 4px; cursor: pointer; flex-shrink: 0; }
+.recipe-mat-gathered input { width: 16px; height: 16px; accent-color: #22c55e; cursor: pointer; }
+.recipe-mat-gathered-label { font-size: 0.7rem; color: #888; text-transform: uppercase; }
+.recipe-mat-name { font-weight: 600; font-size: 0.85rem; }
+.recipe-mat-gathered-name { color: #666; text-decoration: line-through; }
+.recipe-mat-qty { color: #f59e0b; font-size: 0.8rem; font-weight: 600; flex-shrink: 0; }
+.recipe-mat-tag {
+  font-size: 0.6rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+  text-transform: uppercase; letter-spacing: 0.04em; flex-shrink: 0;
+}
+.tag-group { background: #1e3a5f; color: #93c5fd; }
+.tag-locked { background: #3f1e1e; color: #fca5a5; }
+
+.recipe-mat-price { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.recipe-price-input {
+  width: 120px; padding: 6px 10px; background: #1a1a1a; border: 1px solid #333;
+  border-radius: 6px; color: #fff; font-size: 0.85rem; font-family: 'Consolas', monospace;
+}
+.recipe-price-input:focus { outline: none; border-color: #f59e0b; }
+.recipe-mat-line-total { color: #888; font-size: 0.8rem; font-family: 'Consolas', monospace; min-width: 80px; }
+.recipe-mat-free { color: #22c55e; font-size: 0.8rem; font-weight: 600; }
+
+.btn-refresh-prices {
+  margin-top: 12px; padding: 8px 16px; background: #2a2a2a; border: 1px solid #444;
+  color: #ccc; border-radius: 8px; cursor: pointer; font-size: 0.8rem; transition: all 0.2s;
+}
+.btn-refresh-prices:hover:not(:disabled) { background: #333; border-color: #f59e0b; color: #f59e0b; }
+.btn-refresh-prices:disabled { opacity: 0.5; cursor: not-allowed; }
+
 @media (max-width: 600px) {
   .field-row { flex-direction: column; gap: 8px; }
   .material-row { flex-wrap: wrap; }
   .mat-name { flex-basis: 100%; }
   .header h1 { font-size: 1.4rem; }
+  .recipe-mat-row { flex-direction: column; align-items: flex-start; }
+  .recipe-mat-price { width: 100%; }
+  .recipe-price-input { flex: 1; }
+  .recipe-controls { flex-direction: column; }
+  .tabs { flex-wrap: wrap; }
 }
 </style>
