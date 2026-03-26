@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
-import { searchRecipes, fetchRecipe } from './utils/recipes.js';
+import { searchRecipes, fetchRecipe, findRecipeIdByName } from './utils/recipes.js';
 import { fetchMarketPrice, fetchMarketPrices } from './utils/arsha.js';
 
 const tab = ref('marketplace');
@@ -250,6 +250,53 @@ const clearRecipe = () => {
   recipeResults.value = [];
   materialState.value = {};
   recipeError.value = '';
+  subRecipes.value = {};
+};
+
+// ─── SUB-RECIPES (expandable material breakdown) ─────────────────────────────
+// keyed by parent material itemId → { loading, recipe, expanded }
+const subRecipes = ref({});
+
+const toggleSubRecipe = async (material) => {
+  const key = material.itemId;
+  if (subRecipes.value[key]) {
+    // Toggle expand/collapse
+    subRecipes.value[key].expanded = !subRecipes.value[key].expanded;
+    return;
+  }
+
+  // First time — fetch the sub-recipe
+  subRecipes.value[key] = { loading: true, recipe: null, expanded: true };
+
+  try {
+    const recipeId = await findRecipeIdByName(material.name);
+    if (!recipeId) {
+      subRecipes.value[key].loading = false;
+      return;
+    }
+    const recipe = await fetchRecipe(recipeId);
+    subRecipes.value[key].recipe = recipe;
+    subRecipes.value[key].loading = false;
+
+    // Init material state + fetch prices for sub-materials
+    if (recipe?.materials) {
+      for (const sm of recipe.materials) {
+        if (!materialState.value[sm.itemId]) {
+          materialState.value[sm.itemId] = { source: 'market', price: null, priceSource: null, priceLoading: true };
+          // Fetch price
+          fetchMarketPrice(sm.itemId, recipeRegion.value).then(data => {
+            if (materialState.value[sm.itemId]) {
+              materialState.value[sm.itemId].price = data?.price || null;
+              materialState.value[sm.itemId].priceSource = data?.source || null;
+              materialState.value[sm.itemId].priceLoading = false;
+            }
+          });
+        }
+      }
+    }
+  } catch {
+    subRecipes.value[key].loading = false;
+  }
 };
 
 // ─── FORMATTING ──────────────────────────────────────────────────────────────
@@ -552,47 +599,107 @@ const silver = (n) => {
           <!-- Materials -->
           <h4 class="sub-heading">Materials ({{ selectedRecipe.materials.length }} items)</h4>
           <div class="recipe-mat-list">
-            <div
-              v-for="m in selectedRecipe.materials"
-              :key="m.itemId"
-              class="recipe-mat-row"
-              :class="{ 'recipe-mat-row--gathered': materialState[m.itemId]?.source === 'gathered' }"
-            >
-              <div class="recipe-mat-info">
-                <button
-                  class="recipe-source-toggle"
-                  :class="materialState[m.itemId]?.source === 'gathered' ? 'source-gathered' : 'source-market'"
-                  @click="materialState[m.itemId].source = materialState[m.itemId].source === 'market' ? 'gathered' : 'market'"
-                  :title="materialState[m.itemId]?.source === 'gathered' ? 'Self-gathered (free) — click to switch to Market' : 'Bought on Market — click to switch to Self-gathered'"
-                >
-                  {{ materialState[m.itemId]?.source === 'gathered' ? 'Gathered' : 'Market' }}
-                </button>
-                <span class="recipe-mat-name" :class="{ 'recipe-mat-gathered-name': materialState[m.itemId]?.source === 'gathered' }">
-                  {{ m.name }}
-                </span>
-                <span class="recipe-mat-qty">x{{ m.qty }}</span>
-                <span v-if="m.isGroup" class="recipe-mat-tag tag-group" title="Can be substituted with similar items">sub</span>
-                <span v-if="m.isLocked" class="recipe-mat-tag tag-locked" title="Cannot be substituted">fixed</span>
-              </div>
-              <div class="recipe-mat-price">
-                <template v-if="materialState[m.itemId]?.source === 'gathered'">
-                  <span class="recipe-mat-free">Free (self-gathered)</span>
-                </template>
-                <template v-else>
-                  <span v-if="materialState[m.itemId]?.priceSource === 'npc'" class="recipe-mat-tag tag-npc">NPC</span>
-                  <input
-                    type="number"
-                    class="recipe-price-input"
-                    :value="materialState[m.itemId]?.price"
-                    @input="materialState[m.itemId].price = Number($event.target.value) || null"
-                    placeholder="Price each"
-                  />
-                  <span class="recipe-mat-line-total">
-                    = {{ silver((materialState[m.itemId]?.price || 0) * m.qty) }}
+            <template v-for="m in selectedRecipe.materials" :key="m.itemId">
+              <div
+                class="recipe-mat-row"
+                :class="{ 'recipe-mat-row--gathered': materialState[m.itemId]?.source === 'gathered' }"
+              >
+                <div class="recipe-mat-info">
+                  <button
+                    v-if="m.hasRecipe"
+                    class="recipe-expand-btn"
+                    @click="toggleSubRecipe(m)"
+                    :title="subRecipes[m.itemId]?.expanded ? 'Collapse sub-recipe' : 'Expand sub-recipe'"
+                  >
+                    {{ subRecipes[m.itemId]?.expanded ? '▼' : '▶' }}
+                  </button>
+                  <span v-else class="recipe-expand-spacer"></span>
+                  <button
+                    class="recipe-source-toggle"
+                    :class="materialState[m.itemId]?.source === 'gathered' ? 'source-gathered' : 'source-market'"
+                    @click="materialState[m.itemId].source = materialState[m.itemId].source === 'market' ? 'gathered' : 'market'"
+                    :title="materialState[m.itemId]?.source === 'gathered' ? 'Self-gathered (free) — click to switch to Market' : 'Bought on Market — click to switch to Self-gathered'"
+                  >
+                    {{ materialState[m.itemId]?.source === 'gathered' ? 'Gathered' : 'Market' }}
+                  </button>
+                  <span class="recipe-mat-name" :class="{ 'recipe-mat-gathered-name': materialState[m.itemId]?.source === 'gathered', 'recipe-mat-name--craftable': m.hasRecipe }">
+                    {{ m.name }}
                   </span>
-                </template>
+                  <span class="recipe-mat-qty">x{{ m.qty }}</span>
+                  <span v-if="m.isGroup" class="recipe-mat-tag tag-group" title="Can be substituted with similar items">sub</span>
+                  <span v-if="m.isLocked" class="recipe-mat-tag tag-locked" title="Cannot be substituted">fixed</span>
+                  <span v-if="m.hasRecipe" class="recipe-mat-tag tag-craftable">recipe</span>
+                </div>
+                <div class="recipe-mat-price">
+                  <template v-if="materialState[m.itemId]?.source === 'gathered'">
+                    <span class="recipe-mat-free">Free (self-gathered)</span>
+                  </template>
+                  <template v-else>
+                    <span v-if="materialState[m.itemId]?.priceSource === 'npc'" class="recipe-mat-tag tag-npc">NPC</span>
+                    <input
+                      type="number"
+                      class="recipe-price-input"
+                      :value="materialState[m.itemId]?.price"
+                      @input="materialState[m.itemId].price = Number($event.target.value) || null"
+                      placeholder="Price each"
+                    />
+                    <span class="recipe-mat-line-total">
+                      = {{ silver((materialState[m.itemId]?.price || 0) * m.qty) }}
+                    </span>
+                  </template>
+                </div>
               </div>
-            </div>
+
+              <!-- Sub-recipe (expanded) -->
+              <div v-if="subRecipes[m.itemId]?.expanded" class="sub-recipe-wrap">
+                <div v-if="subRecipes[m.itemId]?.loading" class="sub-recipe-loading">Loading sub-recipe...</div>
+                <div v-else-if="subRecipes[m.itemId]?.recipe" class="sub-recipe-content">
+                  <div class="sub-recipe-header">
+                    {{ subRecipes[m.itemId].recipe.name }}
+                    <span v-if="subRecipes[m.itemId].recipe.category" class="recipe-badge" style="font-size:0.6rem;">{{ subRecipes[m.itemId].recipe.category }}</span>
+                  </div>
+                  <div
+                    v-for="sm in subRecipes[m.itemId].recipe.materials"
+                    :key="sm.itemId"
+                    class="sub-recipe-mat-row"
+                    :class="{ 'recipe-mat-row--gathered': materialState[sm.itemId]?.source === 'gathered' }"
+                  >
+                    <div class="recipe-mat-info">
+                      <button
+                        class="recipe-source-toggle recipe-source-toggle--sm"
+                        :class="materialState[sm.itemId]?.source === 'gathered' ? 'source-gathered' : 'source-market'"
+                        @click="materialState[sm.itemId] && (materialState[sm.itemId].source = materialState[sm.itemId].source === 'market' ? 'gathered' : 'market')"
+                      >
+                        {{ materialState[sm.itemId]?.source === 'gathered' ? 'Gathered' : 'Market' }}
+                      </button>
+                      <span class="recipe-mat-name" :class="{ 'recipe-mat-gathered-name': materialState[sm.itemId]?.source === 'gathered' }">
+                        {{ sm.name }}
+                      </span>
+                      <span class="recipe-mat-qty">x{{ sm.qty }}</span>
+                    </div>
+                    <div class="recipe-mat-price">
+                      <template v-if="materialState[sm.itemId]?.source === 'gathered'">
+                        <span class="recipe-mat-free">Free</span>
+                      </template>
+                      <template v-else-if="materialState[sm.itemId]">
+                        <span v-if="materialState[sm.itemId]?.priceSource === 'npc'" class="recipe-mat-tag tag-npc">NPC</span>
+                        <input
+                          type="number"
+                          class="recipe-price-input recipe-price-input--sm"
+                          :value="materialState[sm.itemId]?.price"
+                          @input="materialState[sm.itemId].price = Number($event.target.value) || null"
+                          placeholder="Price"
+                        />
+                        <span class="recipe-mat-line-total">
+                          = {{ silver((materialState[sm.itemId]?.price || 0) * sm.qty) }}
+                        </span>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="sub-recipe-loading">No recipe found for {{ m.name }}</div>
+              </div>
+            </template>
           </div>
 
           <!-- Refresh prices button -->
@@ -814,6 +921,33 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .tag-group { background: #1e3a5f; color: #93c5fd; }
 .tag-locked { background: #3f1e1e; color: #fca5a5; }
 .tag-npc { background: #3f3a1e; color: #fde68a; }
+.tag-craftable { background: #1e2a3f; color: #a78bfa; }
+
+.recipe-expand-btn {
+  background: none; border: none; color: #888; cursor: pointer; font-size: 0.75rem;
+  width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; transition: color 0.2s;
+}
+.recipe-expand-btn:hover { color: #f59e0b; }
+.recipe-expand-spacer { width: 20px; flex-shrink: 0; }
+.recipe-mat-name--craftable { color: #a78bfa; }
+
+/* Sub-recipe nesting */
+.sub-recipe-wrap {
+  margin-left: 28px; padding: 8px 0 8px 12px; border-left: 2px solid #2a2a2a;
+}
+.sub-recipe-loading { color: #888; font-size: 0.8rem; padding: 6px 0; }
+.sub-recipe-header {
+  font-size: 0.85rem; font-weight: 700; color: #a78bfa; margin-bottom: 6px;
+  display: flex; align-items: center; gap: 8px;
+}
+.sub-recipe-mat-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 5px 10px; background: #131313; border: 1px solid #1e1e1e; border-radius: 6px;
+  margin-bottom: 4px; flex-wrap: wrap;
+}
+.recipe-source-toggle--sm { font-size: 0.6rem; padding: 2px 7px; min-width: 58px; }
+.recipe-price-input--sm { width: 100px; font-size: 0.8rem; padding: 4px 8px; }
 
 .recipe-mat-price { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .recipe-price-input {

@@ -92,11 +92,18 @@ const parseRecipeHtml = (html) => {
         const isGroup = !!(parentWrapper?.querySelector('img[alt="group"]'));
         const isLocked = !!(parentWrapper?.querySelector('img[alt="lock"]'));
 
+        // Check if this material is itself craftable (has a sub-recipe)
+        const tipType = link.getAttribute('data-tiptype') || '';
+        const hasCraftableLinks = [...cell.querySelectorAll(`a[data-id="${dataId}"]`)].some(
+          a => a.getAttribute('data-tiptype') === 'recipe' || a.getAttribute('data-tiptype') === 'recipekey'
+        );
+        const hasRecipe = tipType === 'recipe' || tipType === 'recipekey' || hasCraftableLinks;
+
         // Name from the text link (not the icon link)
         const textLink = [...cell.querySelectorAll(`a[data-id="${dataId}"]`)].find(a => a.textContent.trim());
         const matName = textLink?.textContent?.trim() || `Item #${itemId}`;
 
-        materials.push({ itemId, name: matName, qty, isGroup, isLocked });
+        materials.push({ itemId, name: matName, qty, isGroup, isLocked, hasRecipe });
       }
     }
   }
@@ -193,6 +200,24 @@ export const searchRecipes = async (query) => {
     console.warn('Recipe search failed:', err.message);
     return [];
   }
+};
+
+/**
+ * Find a recipe ID by exact product name (for sub-recipe lookups).
+ * @param {string} name - exact item name
+ * @returns {Promise<number|null>} recipe ID or null
+ */
+export const findRecipeIdByName = async (name) => {
+  try {
+    const all = await loadAllRecipes();
+    const lower = name.toLowerCase();
+    // Exact match first
+    const exact = all.find(r => r.name.toLowerCase() === lower);
+    if (exact) return exact.id;
+    // Starts-with fallback
+    const starts = all.find(r => r.name.toLowerCase().startsWith(lower));
+    return starts?.id || null;
+  } catch { return null; }
 };
 
 // ─── Fetch full recipe details ───────────────────────────────────────────────
