@@ -342,6 +342,7 @@ const toggleSubRecipe = async (material) => {
 };
 
 // ─── IMPERIAL COOKING ────────────────────────────────────────────────────────
+const showImpFormula = ref(false);
 const imp = ref({
   mastery: 0,
   cp: 300,
@@ -363,6 +364,7 @@ const impROI = computed(() => {
 });
 
 // ─── CRATE TRADING ──────────────────────────────────────────────────────────
+const showTradeFormula = ref(false);
 const trade = ref({
   basePrice: null,
   distanceBonus: 150,
@@ -737,7 +739,10 @@ const silver = (n) => {
       <!-- ═══ IMPERIAL COOKING ═══ -->
       <section v-if="tab === 'imperial'" class="calc-section">
         <h2>Imperial Cooking Delivery</h2>
-        <p class="hint" style="margin-bottom: 12px;">Calculate profit from packaging dishes into imperial cooking boxes and selling to the Imperial NPC. No marketplace tax.</p>
+        <p class="hint formula-toggle" style="margin-bottom: 12px;" @click="showImpFormula = !showImpFormula">
+          {{ showImpFormula ? '▼' : '▶' }} Formula
+        </p>
+        <p v-if="showImpFormula" class="hint formula-box">Base Price x (2.50 + Mastery Bonus). No marketplace tax. Daily limit = CP / 2.</p>
 
         <div class="field-row">
           <div class="field">
@@ -802,7 +807,10 @@ const silver = (n) => {
       <!-- ═══ CRATE TRADING ═══ -->
       <section v-if="tab === 'trading'" class="calc-section">
         <h2>Crate Trading Calculator</h2>
-        <p class="hint" style="margin-bottom: 12px;">Calculate profit from selling trade crates. Formula: Base Price x (1 + Distance%) x (1 + Bargain%).</p>
+        <p class="hint formula-toggle" style="margin-bottom: 12px;" @click="showTradeFormula = !showTradeFormula">
+          {{ showTradeFormula ? '▼' : '▶' }} Formula
+        </p>
+        <p v-if="showTradeFormula" class="hint formula-box">Base Price x (1 + Distance%) x (1 + Bargain%)</p>
 
         <div class="field-row">
           <div class="field">
@@ -1082,6 +1090,15 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 }
 .btn-refresh-prices:hover:not(:disabled) { background: #333; border-color: #f59e0b; color: #f59e0b; }
 .btn-refresh-prices:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Formula toggle ── */
+.formula-toggle { cursor: pointer; user-select: none; transition: color 0.2s; }
+.formula-toggle:hover { color: #f59e0b; }
+.formula-box {
+  background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+  padding: 10px 14px; margin-bottom: 12px; font-family: 'Consolas', monospace;
+  color: #f59e0b; font-size: 0.85rem;
+}
 
 /* ── Trading slider ── */
 .trade-slider {
