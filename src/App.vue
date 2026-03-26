@@ -196,6 +196,7 @@ const loadPrices = async () => {
     const data = await fetchMarketPrice(id, recipeRegion.value);
     if (materialState.value[id]) {
       materialState.value[id].price = data?.price || null;
+      materialState.value[id].priceSource = data?.source || null; // 'market' | 'npc'
       materialState.value[id].priceLoading = false;
     }
   });
@@ -578,6 +579,7 @@ const silver = (n) => {
                   <span class="recipe-mat-free">Free (self-gathered)</span>
                 </template>
                 <template v-else>
+                  <span v-if="materialState[m.itemId]?.priceSource === 'npc'" class="recipe-mat-tag tag-npc">NPC</span>
                   <input
                     type="number"
                     class="recipe-price-input"
@@ -811,6 +813,7 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 }
 .tag-group { background: #1e3a5f; color: #93c5fd; }
 .tag-locked { background: #3f1e1e; color: #fca5a5; }
+.tag-npc { background: #3f3a1e; color: #fde68a; }
 
 .recipe-mat-price { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .recipe-price-input {
