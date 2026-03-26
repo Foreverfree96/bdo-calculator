@@ -46,10 +46,12 @@ export const fetchMarketPrice = async (itemId, region = 'na') => {
     const res = await fetch(`${BASE}/${region}/item?id=${itemId}`);
     if (!res.ok) return null;
     const data = await res.json();
-    if (Array.isArray(data) && data.length) {
+    // Response can be a single object or an array (enhancement levels)
+    const item = Array.isArray(data) ? data[0] : data;
+    if (item && (item.basePrice || item.lastSoldPrice)) {
       return {
-        price: data[0].price || data[0].basePrice || 0,
-        stock: data[0].currentStock ?? data[0].totalTradeCount ?? 0,
+        price: item.lastSoldPrice || item.basePrice || 0,
+        stock: item.currentStock ?? 0,
         source: 'market',
       };
     }
