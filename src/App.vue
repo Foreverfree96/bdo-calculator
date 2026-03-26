@@ -121,7 +121,7 @@ const recipePricesLoading = ref(false);
 const recipeError = ref('');
 const showRecipeDropdown = ref(false);
 
-// Material state: keyed by itemId → { selfGathered, price, priceLoading }
+// Material state: keyed by itemId → { source: 'market'|'gathered', price, priceLoading }
 const materialState = ref({});
 
 let searchTimeout = null;
@@ -160,14 +160,14 @@ const selectRecipe = async (recipe) => {
     }
     selectedRecipe.value = data;
 
-    // Init material state
+    // Init material state — default all to 'market' (bought)
     const state = {};
     for (const m of data.materials) {
-      state[m.itemId] = { selfGathered: false, price: null, priceLoading: true };
+      state[m.itemId] = { source: 'market', price: null, priceLoading: true };
     }
     // Also init for result items (to show sell price)
     for (const r of data.results) {
-      state[r.itemId] = { selfGathered: false, price: null, priceLoading: true };
+      state[r.itemId] = { source: 'market', price: null, priceLoading: true };
     }
     materialState.value = state;
     recipeLoading.value = false;
@@ -204,14 +204,28 @@ const loadPrices = async () => {
   recipePricesLoading.value = false;
 };
 
-// Computed: total material cost
+// Computed: total material cost (only market-bought materials)
 const recipeTotalCost = computed(() => {
   if (!selectedRecipe.value) return 0;
   return selectedRecipe.value.materials.reduce((sum, m) => {
     const s = materialState.value[m.itemId];
-    if (!s || s.selfGathered) return sum;
+    if (!s || s.source === 'gathered') return sum;
     return sum + (s.price || 0) * (m.qty || 1);
   }, 0);
+});
+
+// Computed: breakdown by source
+const recipeMarketCost = computed(() => {
+  if (!selectedRecipe.value) return 0;
+  return selectedRecipe.value.materials.reduce((sum, m) => {
+    const s = materialState.value[m.itemId];
+    if (!s || s.source !== 'market') return sum;
+    return sum + (s.price || 0) * (m.qty || 1);
+  }, 0);
+});
+const recipeGatheredCount = computed(() => {
+  if (!selectedRecipe.value) return 0;
+  return selectedRecipe.value.materials.filter(m => materialState.value[m.itemId]?.source === 'gathered').length;
 });
 
 // Computed: sell revenue (first result item)
@@ -535,19 +549,24 @@ const silver = (n) => {
           </div>
 
           <!-- Materials -->
-          <h4 class="sub-heading">Materials</h4>
+          <h4 class="sub-heading">Materials ({{ selectedRecipe.materials.length }} items)</h4>
           <div class="recipe-mat-list">
-            <div v-for="m in selectedRecipe.materials" :key="m.itemId" class="recipe-mat-row">
+            <div
+              v-for="m in selectedRecipe.materials"
+              :key="m.itemId"
+              class="recipe-mat-row"
+              :class="{ 'recipe-mat-row--gathered': materialState[m.itemId]?.source === 'gathered' }"
+            >
               <div class="recipe-mat-info">
-                <label class="recipe-mat-gathered">
-                  <input
-                    type="checkbox"
-                    :checked="materialState[m.itemId]?.selfGathered"
-                    @change="materialState[m.itemId].selfGathered = $event.target.checked"
-                  />
-                  <span class="recipe-mat-gathered-label">Self</span>
-                </label>
-                <span class="recipe-mat-name" :class="{ 'recipe-mat-gathered-name': materialState[m.itemId]?.selfGathered }">
+                <button
+                  class="recipe-source-toggle"
+                  :class="materialState[m.itemId]?.source === 'gathered' ? 'source-gathered' : 'source-market'"
+                  @click="materialState[m.itemId].source = materialState[m.itemId].source === 'market' ? 'gathered' : 'market'"
+                  :title="materialState[m.itemId]?.source === 'gathered' ? 'Self-gathered (free) — click to switch to Market' : 'Bought on Market — click to switch to Self-gathered'"
+                >
+                  {{ materialState[m.itemId]?.source === 'gathered' ? 'Gathered' : 'Market' }}
+                </button>
+                <span class="recipe-mat-name" :class="{ 'recipe-mat-gathered-name': materialState[m.itemId]?.source === 'gathered' }">
                   {{ m.name }}
                 </span>
                 <span class="recipe-mat-qty">x{{ m.qty }}</span>
@@ -555,8 +574,8 @@ const silver = (n) => {
                 <span v-if="m.isLocked" class="recipe-mat-tag tag-locked" title="Cannot be substituted">fixed</span>
               </div>
               <div class="recipe-mat-price">
-                <template v-if="materialState[m.itemId]?.selfGathered">
-                  <span class="recipe-mat-free">Free</span>
+                <template v-if="materialState[m.itemId]?.source === 'gathered'">
+                  <span class="recipe-mat-free">Free (self-gathered)</span>
                 </template>
                 <template v-else>
                   <input
@@ -582,7 +601,15 @@ const silver = (n) => {
           <!-- Summary -->
           <div class="results-card" style="margin-top: 16px;">
             <div class="result-row">
-              <span>Total Material Cost</span>
+              <span>Market Materials Cost</span>
+              <span class="val">{{ silver(recipeMarketCost) }}</span>
+            </div>
+            <div class="result-row">
+              <span>Self-Gathered</span>
+              <span class="val" style="color: #22c55e;">{{ recipeGatheredCount }} items (free)</span>
+            </div>
+            <div class="result-row">
+              <span>Total Cost (bought only)</span>
               <span class="val">{{ silver(recipeTotalCost) }}</span>
             </div>
             <div class="result-row">
@@ -764,10 +791,17 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   padding: 8px 12px; background: #161616; border: 1px solid #222; border-radius: 8px;
   flex-wrap: wrap;
 }
+.recipe-mat-row--gathered { border-color: #1a3a1a; background: #0f1a0f; }
 .recipe-mat-info { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 200px; }
-.recipe-mat-gathered { display: flex; align-items: center; gap: 4px; cursor: pointer; flex-shrink: 0; }
-.recipe-mat-gathered input { width: 16px; height: 16px; accent-color: #22c55e; cursor: pointer; }
-.recipe-mat-gathered-label { font-size: 0.7rem; color: #888; text-transform: uppercase; }
+.recipe-source-toggle {
+  padding: 3px 10px; border-radius: 6px; font-size: 0.7rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.04em; cursor: pointer; border: 1px solid;
+  transition: all 0.2s; flex-shrink: 0; min-width: 72px; text-align: center;
+}
+.source-market { background: #1e293b; border-color: #334155; color: #60a5fa; }
+.source-market:hover { background: #1e3a5f; border-color: #60a5fa; }
+.source-gathered { background: #14532d; border-color: #166534; color: #4ade80; }
+.source-gathered:hover { background: #166534; border-color: #4ade80; }
 .recipe-mat-name { font-weight: 600; font-size: 0.85rem; }
 .recipe-mat-gathered-name { color: #666; text-decoration: line-through; }
 .recipe-mat-qty { color: #f59e0b; font-size: 0.8rem; font-weight: 600; flex-shrink: 0; }

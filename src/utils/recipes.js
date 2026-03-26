@@ -132,37 +132,63 @@ const parseRecipeHtml = (html) => {
   return { name, category, skillLevel, materials, results };
 };
 
-// ─── Search recipes on BDO Codex ─────────────────────────────────────────────
-/**
- * Search for recipes by name.
- * @param {string} query
- * @returns {Promise<Array<{id: number, name: string, category: string}>>}
- */
-export const searchRecipes = async (query) => {
-  if (!query || query.length < 2) return [];
+// ─── Full recipe index (fetched once, cached, filtered locally) ──────────────
+let _allRecipes = null;
+let _allRecipesPromise = null;
 
-  const cacheKey = `search_${query.toLowerCase()}`;
-  const cached = getCached(cacheKey);
-  if (cached) return cached;
+const loadAllRecipes = () => {
+  if (_allRecipes) return Promise.resolve(_allRecipes);
+  if (_allRecipesPromise) return _allRecipesPromise;
 
-  try {
-    const url = `${CODEX}/query.php?a=recipes&l=us&q=${encodeURIComponent(query)}`;
+  // Check localStorage first
+  const cached = getCached('all_recipes');
+  if (cached) { _allRecipes = cached; return Promise.resolve(cached); }
+
+  _allRecipesPromise = (async () => {
+    // BDO Codex returns the full list regardless of query — fetch once with a short query
+    const url = `${CODEX}/query.php?a=recipes&l=us&q=a`;
     const res = await fetch(`${PROXY}${encodeURIComponent(url)}`);
-    if (!res.ok) return [];
-    const data = await res.json();
+    if (!res.ok) throw new Error('Failed to load recipe index');
+    const raw = (await res.text()).replace(/^\uFEFF/, '');
+    const data = JSON.parse(raw);
 
-    const recipes = (data.aaData || []).map(row => {
-      // row[0] = recipe ID, row[2] = HTML with name, row[3] = category
+    _allRecipes = (data.aaData || []).map(row => {
       const id = row[0];
-      // Extract name from HTML
       const nameMatch = row[2]?.match(/<b>(.+?)<\/b>/);
       const name = nameMatch ? nameMatch[1].replace(/<[^>]+>/g, '').trim() : `Recipe #${id}`;
       const category = row[3] || '';
       return { id, name, category };
     });
 
-    setCache(cacheKey, recipes);
-    return recipes;
+    setCache('all_recipes', _allRecipes);
+    _allRecipesPromise = null;
+    return _allRecipes;
+  })();
+
+  _allRecipesPromise.catch(() => { _allRecipesPromise = null; });
+  return _allRecipesPromise;
+};
+
+/**
+ * Search for recipes by name. Fetches full index once, then filters locally.
+ * @param {string} query
+ * @returns {Promise<Array<{id: number, name: string, category: string}>>}
+ */
+export const searchRecipes = async (query) => {
+  if (!query || query.length < 2) return [];
+
+  try {
+    const all = await loadAllRecipes();
+    const q = query.toLowerCase();
+    // Prioritize: starts-with first, then includes
+    const starts = [];
+    const includes = [];
+    for (const r of all) {
+      const lower = r.name.toLowerCase();
+      if (lower.startsWith(q)) starts.push(r);
+      else if (lower.includes(q)) includes.push(r);
+    }
+    return [...starts, ...includes];
   } catch (err) {
     console.warn('Recipe search failed:', err.message);
     return [];
@@ -184,7 +210,7 @@ export const fetchRecipe = async (recipeId) => {
     const url = `${CODEX}/tip.php?id=recipe--${recipeId}&l=us&nf=on`;
     const res = await fetch(`${PROXY}${encodeURIComponent(url)}`);
     if (!res.ok) return null;
-    const html = await res.text();
+    const html = (await res.text()).replace(/^\uFEFF/, '');
     const recipe = parseRecipeHtml(html);
     recipe.id = recipeId;
     setCache(cacheKey, recipe);
