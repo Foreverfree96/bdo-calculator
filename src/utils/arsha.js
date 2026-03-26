@@ -37,28 +37,27 @@ const NPC_PRICES = {
  * @returns {Promise<{price: number, stock: number, source: 'market'|'npc'}|null>}
  */
 export const fetchMarketPrice = async (itemId, region = 'na') => {
-  // Check NPC prices first — these will 404 on Arsha.io
+  // Try market API first
+  try {
+    const res = await fetch(`${BASE}/${region}/item?id=${itemId}`);
+    if (res.ok) {
+      const data = await res.json();
+      const item = Array.isArray(data) ? data[0] : data;
+      const price = item?.lastSoldPrice > 0 ? item.lastSoldPrice
+                  : item?.basePrice > 0 ? item.basePrice
+                  : null;
+      if (price != null) {
+        return { price, stock: item.currentStock ?? 0, source: 'market' };
+      }
+    }
+  } catch { /* fall through to NPC fallback */ }
+
+  // Fallback: known NPC vendor prices for items that 404 or have no market data
   if (NPC_PRICES[itemId] != null) {
     return { price: NPC_PRICES[itemId], stock: Infinity, source: 'npc' };
   }
 
-  try {
-    const res = await fetch(`${BASE}/${region}/item?id=${itemId}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    // Response can be a single object or an array (enhancement levels)
-    const item = Array.isArray(data) ? data[0] : data;
-    if (item && (item.basePrice || item.lastSoldPrice)) {
-      return {
-        price: item.lastSoldPrice || item.basePrice || 0,
-        stock: item.currentStock ?? 0,
-        source: 'market',
-      };
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  return null;
 };
 
 /**

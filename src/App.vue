@@ -2,6 +2,8 @@
 import { ref, computed, watch } from 'vue';
 import { searchRecipes, fetchRecipe, findRecipeIdByName, preloadRecipeIndex } from './utils/recipes.js';
 import { fetchMarketPrice, fetchMarketPrices } from './utils/arsha.js';
+import { getMasteryBonus, getBoxSellPrice, getBoxLimit, BOX_TIERS } from './utils/imperial.js';
+import { TRADING_LEVELS, getBargainBonus, getCrateSellPrice } from './utils/trading.js';
 import RecipeMaterial from './components/RecipeMaterial.vue';
 
 const tab = ref('marketplace');
@@ -339,6 +341,46 @@ const toggleSubRecipe = async (material) => {
   await autoExpandSubRecipe(material);
 };
 
+// ─── IMPERIAL COOKING ────────────────────────────────────────────────────────
+const imp = ref({
+  mastery: 0,
+  cp: 300,
+  tierIndex: 5, // default Guru
+  matCostPerBox: null,
+});
+
+const impTier = computed(() => BOX_TIERS[imp.value.tierIndex]);
+const impMasteryBonus = computed(() => getMasteryBonus(imp.value.mastery));
+const impMasteryPct = computed(() => (impMasteryBonus.value * 100).toFixed(2));
+const impBoxSellPrice = computed(() => getBoxSellPrice(impTier.value.basePrice, imp.value.mastery));
+const impBoxLimit = computed(() => getBoxLimit(imp.value.cp));
+const impProfitPerBox = computed(() => impBoxSellPrice.value - (imp.value.matCostPerBox || 0));
+const impDailyRevenue = computed(() => impBoxLimit.value * impBoxSellPrice.value);
+const impDailyProfit = computed(() => impBoxLimit.value * impProfitPerBox.value);
+const impROI = computed(() => {
+  if (!imp.value.matCostPerBox) return 0;
+  return ((impProfitPerBox.value / imp.value.matCostPerBox) * 100).toFixed(1);
+});
+
+// ─── CRATE TRADING ──────────────────────────────────────────────────────────
+const trade = ref({
+  basePrice: null,
+  distanceBonus: 150,
+  levelIndex: 50, // default ~Artisan 1
+  matCost: null,
+  quantity: 1,
+});
+
+const tradeBargainPct = computed(() => getBargainBonus(trade.value.levelIndex));
+const tradeLevelLabel = computed(() => TRADING_LEVELS[trade.value.levelIndex]?.label || '');
+const tradeSellPrice = computed(() => getCrateSellPrice(trade.value.basePrice || 0, trade.value.distanceBonus || 0, trade.value.levelIndex));
+const tradeProfitPerCrate = computed(() => tradeSellPrice.value - (trade.value.matCost || 0));
+const tradeTotalProfit = computed(() => tradeProfitPerCrate.value * (trade.value.quantity || 1));
+const tradeROI = computed(() => {
+  if (!trade.value.matCost) return 0;
+  return ((tradeProfitPerCrate.value / trade.value.matCost) * 100).toFixed(1);
+});
+
 // ─── FORMATTING ──────────────────────────────────────────────────────────────
 const silver = (n) => {
   if (n == null) return '—';
@@ -363,6 +405,8 @@ const silver = (n) => {
       <button :class="['tab', { active: tab === 'crafting' }]" @click="tab = 'crafting'">Crafting</button>
       <button :class="['tab', { active: tab === 'enhancement' }]" @click="tab = 'enhancement'">Enhancement</button>
       <button :class="['tab', { active: tab === 'recipes' }]" @click="tab = 'recipes'">Recipes</button>
+      <button :class="['tab', { active: tab === 'imperial' }]" @click="tab = 'imperial'">Imperial</button>
+      <button :class="['tab', { active: tab === 'trading' }]" @click="tab = 'trading'">Trading</button>
     </nav>
 
     <main class="content">
@@ -690,6 +734,131 @@ const silver = (n) => {
         </div>
       </section>
 
+      <!-- ═══ IMPERIAL COOKING ═══ -->
+      <section v-if="tab === 'imperial'" class="calc-section">
+        <h2>Imperial Cooking Delivery</h2>
+        <p class="hint" style="margin-bottom: 12px;">Calculate profit from packaging dishes into imperial cooking boxes and selling to the Imperial NPC. No marketplace tax.</p>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Cooking Mastery</label>
+            <input type="number" v-model.number="imp.mastery" min="0" max="3000" placeholder="0" />
+          </div>
+          <div class="field">
+            <label>Contribution Points</label>
+            <input type="number" v-model.number="imp.cp" min="0" placeholder="300" />
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Box Tier</label>
+            <select v-model.number="imp.tierIndex" class="region-select" style="width:100%;">
+              <option v-for="(t, i) in BOX_TIERS" :key="i" :value="i">{{ t.name }} ({{ silver(t.basePrice) }} base)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Material Cost Per Box</label>
+            <input type="number" v-model.number="imp.matCostPerBox" placeholder="e.g. 200000" />
+          </div>
+        </div>
+
+        <div class="results-card">
+          <div class="result-row">
+            <span>Box Tier</span>
+            <span class="val">{{ impTier.name }} ({{ impTier.level }})</span>
+          </div>
+          <div class="result-row">
+            <span>Mastery Bonus</span>
+            <span class="val" style="color: #60a5fa;">+{{ impMasteryPct }}%</span>
+          </div>
+          <div class="result-row">
+            <span>Box Sell Price</span>
+            <span class="val" style="color: #f59e0b;">{{ silver(impBoxSellPrice) }}</span>
+          </div>
+          <div class="result-row">
+            <span>Daily Box Limit (CP/2)</span>
+            <span class="val">{{ impBoxLimit }} boxes</span>
+          </div>
+          <div class="result-row" :class="impProfitPerBox >= 0 ? '' : 'loss-row'">
+            <span>Profit Per Box</span>
+            <span class="val" :class="impProfitPerBox >= 0 ? 'profit' : 'loss'">{{ silver(impProfitPerBox) }}</span>
+          </div>
+          <div class="result-row">
+            <span>Daily Revenue</span>
+            <span class="val" style="color: #f59e0b;">{{ silver(impDailyRevenue) }}</span>
+          </div>
+          <div class="result-row highlight" :class="impDailyProfit >= 0 ? '' : 'loss-row'">
+            <span>Daily Profit</span>
+            <span class="val" :class="impDailyProfit >= 0 ? 'profit' : 'loss'">{{ silver(impDailyProfit) }}</span>
+          </div>
+          <div class="result-row">
+            <span>ROI</span>
+            <span class="val" :class="impROI >= 0 ? 'profit' : 'loss'">{{ impROI }}%</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ CRATE TRADING ═══ -->
+      <section v-if="tab === 'trading'" class="calc-section">
+        <h2>Crate Trading Calculator</h2>
+        <p class="hint" style="margin-bottom: 12px;">Calculate profit from selling trade crates. Formula: Base Price x (1 + Distance%) x (1 + Bargain%).</p>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Crate Base Price</label>
+            <input type="number" v-model.number="trade.basePrice" placeholder="e.g. 67296" />
+          </div>
+          <div class="field">
+            <label>Material Cost Per Crate</label>
+            <input type="number" v-model.number="trade.matCost" placeholder="e.g. 30000" />
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Distance Bonus (%) <span class="hint">max 150</span></label>
+            <input type="number" v-model.number="trade.distanceBonus" min="0" max="150" step="1" placeholder="150" />
+          </div>
+          <div class="field">
+            <label>Quantity</label>
+            <input type="number" v-model.number="trade.quantity" min="1" placeholder="1" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Trading Level — {{ tradeLevelLabel }} ({{ tradeBargainPct.toFixed(1) }}% bargain)</label>
+          <input type="range" v-model.number="trade.levelIndex" min="0" :max="TRADING_LEVELS.length - 1" class="trade-slider" />
+        </div>
+
+        <div class="results-card" style="margin-top: 16px;">
+          <div class="result-row">
+            <span>Distance Bonus</span>
+            <span class="val" style="color: #60a5fa;">+{{ trade.distanceBonus || 0 }}%</span>
+          </div>
+          <div class="result-row">
+            <span>Bargain Bonus ({{ tradeLevelLabel }})</span>
+            <span class="val" style="color: #60a5fa;">+{{ tradeBargainPct.toFixed(1) }}%</span>
+          </div>
+          <div class="result-row">
+            <span>Sell Price Per Crate</span>
+            <span class="val" style="color: #f59e0b;">{{ silver(tradeSellPrice) }}</span>
+          </div>
+          <div class="result-row" :class="tradeProfitPerCrate >= 0 ? '' : 'loss-row'">
+            <span>Profit Per Crate</span>
+            <span class="val" :class="tradeProfitPerCrate >= 0 ? 'profit' : 'loss'">{{ silver(tradeProfitPerCrate) }}</span>
+          </div>
+          <div class="result-row highlight" :class="tradeTotalProfit >= 0 ? '' : 'loss-row'">
+            <span>Total Profit (x{{ trade.quantity || 1 }})</span>
+            <span class="val" :class="tradeTotalProfit >= 0 ? 'profit' : 'loss'">{{ silver(tradeTotalProfit) }}</span>
+          </div>
+          <div class="result-row">
+            <span>ROI</span>
+            <span class="val" :class="tradeROI >= 0 ? 'profit' : 'loss'">{{ tradeROI }}%</span>
+          </div>
+        </div>
+      </section>
+
     </main>
   </div>
 </template>
@@ -913,6 +1082,20 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 }
 .btn-refresh-prices:hover:not(:disabled) { background: #333; border-color: #f59e0b; color: #f59e0b; }
 .btn-refresh-prices:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Trading slider ── */
+.trade-slider {
+  width: 100%; height: 6px; -webkit-appearance: none; appearance: none;
+  background: #333; border-radius: 3px; outline: none; margin-top: 8px;
+}
+.trade-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%;
+  background: #f59e0b; cursor: pointer; border: 2px solid #1a1a1a;
+}
+.trade-slider::-moz-range-thumb {
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #f59e0b; cursor: pointer; border: 2px solid #1a1a1a;
+}
 
 @media (max-width: 600px) {
   .field-row { flex-direction: column; gap: 8px; }
