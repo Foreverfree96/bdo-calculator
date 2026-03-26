@@ -10,7 +10,7 @@ const NPC_PRICES = {
   9003: 40,    // Cooking Wine
   9004: 40,    // Olive Oil
   9005: 20,    // Leavening Agent
-  9006: 20,    // Base Sauce
+  // 9006 is "Dressing" on the market (craftable, ~550 silver) — NOT a cheap NPC item
   9007: 500,   // Cream
   9008: 40,    // Butter
   9009: 500,   // Cheese
