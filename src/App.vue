@@ -1,9 +1,17 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
-import { searchRecipes, fetchRecipe, findRecipeIdByName } from './utils/recipes.js';
+import { searchRecipes, fetchRecipe, findRecipeIdByName, preloadRecipeIndex } from './utils/recipes.js';
 import { fetchMarketPrice, fetchMarketPrices } from './utils/arsha.js';
 
 const tab = ref('marketplace');
+const recipeIndexReady = ref(false);
+
+// Pre-load recipe index when Recipes tab is first opened
+watch(tab, (v) => {
+  if (v === 'recipes' && !recipeIndexReady.value) {
+    preloadRecipeIndex().then(() => { recipeIndexReady.value = true; });
+  }
+});
 
 // ─── MARKETPLACE TAX CALCULATOR ──────────────────────────────────────────────
 const mp = ref({
@@ -143,6 +151,47 @@ const onRecipeSearch = () => {
   }, 400);
 };
 
+// Helper: init material state + fetch price for an item
+const initAndFetchPrice = (itemId) => {
+  if (!materialState.value[itemId]) {
+    materialState.value[itemId] = { source: 'market', price: null, priceSource: null, priceLoading: true };
+  }
+  if (materialState.value[itemId].priceLoading || materialState.value[itemId].price == null) {
+    materialState.value[itemId].priceLoading = true;
+    fetchMarketPrice(itemId, recipeRegion.value).then(data => {
+      if (materialState.value[itemId]) {
+        materialState.value[itemId].price = data?.price || null;
+        materialState.value[itemId].priceSource = data?.source || null;
+        materialState.value[itemId].priceLoading = false;
+      }
+    });
+  }
+};
+
+// Auto-expand a single material's sub-recipe + fetch all its sub-prices
+const autoExpandSubRecipe = async (material) => {
+  const key = material.itemId;
+  if (subRecipes.value[key]?.recipe) return; // already loaded
+
+  subRecipes.value[key] = { loading: true, recipe: null, expanded: true };
+  try {
+    const recipeId = await findRecipeIdByName(material.name);
+    if (!recipeId) { subRecipes.value[key].loading = false; return; }
+    const recipe = await fetchRecipe(recipeId);
+    subRecipes.value[key].recipe = recipe;
+    subRecipes.value[key].loading = false;
+
+    // Init + fetch prices for all sub-materials
+    if (recipe?.materials) {
+      for (const sm of recipe.materials) {
+        initAndFetchPrice(sm.itemId);
+      }
+    }
+  } catch {
+    subRecipes.value[key].loading = false;
+  }
+};
+
 const selectRecipe = async (recipe) => {
   showRecipeDropdown.value = false;
   recipeQuery.value = recipe.name;
@@ -150,6 +199,7 @@ const selectRecipe = async (recipe) => {
   recipeError.value = '';
   selectedRecipe.value = null;
   materialState.value = {};
+  subRecipes.value = {};
 
   try {
     const data = await fetchRecipe(recipe.id);
@@ -160,20 +210,15 @@ const selectRecipe = async (recipe) => {
     }
     selectedRecipe.value = data;
 
-    // Init material state — default all to 'market' (bought)
-    const state = {};
-    for (const m of data.materials) {
-      state[m.itemId] = { source: 'market', price: null, priceLoading: true };
-    }
-    // Also init for result items (to show sell price)
-    for (const r of data.results) {
-      state[r.itemId] = { source: 'market', price: null, priceLoading: true };
-    }
-    materialState.value = state;
+    // Init material state for all top-level materials + results
+    for (const m of data.materials) initAndFetchPrice(m.itemId);
+    for (const r of data.results) initAndFetchPrice(r.itemId);
+
     recipeLoading.value = false;
 
-    // Fetch market prices
-    await loadPrices();
+    // Auto-expand ALL craftable sub-recipes in parallel
+    const craftable = data.materials.filter(m => m.hasRecipe);
+    await Promise.all(craftable.map(m => autoExpandSubRecipe(m)));
   } catch (err) {
     recipeError.value = 'Failed to load recipe: ' + (err.message || 'unknown error');
     recipeLoading.value = false;
@@ -184,19 +229,25 @@ const loadPrices = async () => {
   if (!selectedRecipe.value) return;
   recipePricesLoading.value = true;
 
-  const allIds = [
-    ...selectedRecipe.value.materials.map(m => m.itemId),
-    ...selectedRecipe.value.results.map(r => r.itemId),
-  ];
+  // Collect ALL item IDs — top-level + all sub-recipe materials
+  const allIds = new Set();
+  for (const m of selectedRecipe.value.materials) allIds.add(m.itemId);
+  for (const r of selectedRecipe.value.results) allIds.add(r.itemId);
+  for (const sub of Object.values(subRecipes.value)) {
+    if (sub.recipe?.materials) {
+      for (const sm of sub.recipe.materials) allIds.add(sm.itemId);
+    }
+  }
 
-  // Fetch each price individually (Arsha.io has no batch)
-  const promises = allIds.map(async (id) => {
-    if (!materialState.value[id]) return;
+  const promises = [...allIds].map(async (id) => {
+    if (!materialState.value[id]) {
+      materialState.value[id] = { source: 'market', price: null, priceSource: null, priceLoading: true };
+    }
     materialState.value[id].priceLoading = true;
     const data = await fetchMarketPrice(id, recipeRegion.value);
     if (materialState.value[id]) {
       materialState.value[id].price = data?.price || null;
-      materialState.value[id].priceSource = data?.source || null; // 'market' | 'npc'
+      materialState.value[id].priceSource = data?.source || null;
       materialState.value[id].priceLoading = false;
     }
   });
@@ -205,28 +256,43 @@ const loadPrices = async () => {
   recipePricesLoading.value = false;
 };
 
-// Computed: total material cost (only market-bought materials)
+// Helper: get cost of a single material (uses sub-recipe if expanded, otherwise direct price)
+const getMatCost = (m) => {
+  const s = materialState.value[m.itemId];
+  if (!s || s.source === 'gathered') return 0;
+
+  // If sub-recipe is expanded, use sub-material costs instead of the item's market price
+  const sub = subRecipes.value[m.itemId];
+  if (sub?.expanded && sub?.recipe?.materials?.length) {
+    const subCost = sub.recipe.materials.reduce((sum, sm) => {
+      const ss = materialState.value[sm.itemId];
+      if (!ss || ss.source === 'gathered') return sum;
+      return sum + (ss.price || 0) * (sm.qty || 1);
+    }, 0);
+    return subCost * (m.qty || 1);
+  }
+
+  return (s.price || 0) * (m.qty || 1);
+};
+
+// Computed: total material cost (includes sub-recipe breakdown when expanded)
 const recipeTotalCost = computed(() => {
   if (!selectedRecipe.value) return 0;
-  return selectedRecipe.value.materials.reduce((sum, m) => {
-    const s = materialState.value[m.itemId];
-    if (!s || s.source === 'gathered') return sum;
-    return sum + (s.price || 0) * (m.qty || 1);
-  }, 0);
+  return selectedRecipe.value.materials.reduce((sum, m) => sum + getMatCost(m), 0);
 });
 
 // Computed: breakdown by source
-const recipeMarketCost = computed(() => {
-  if (!selectedRecipe.value) return 0;
-  return selectedRecipe.value.materials.reduce((sum, m) => {
-    const s = materialState.value[m.itemId];
-    if (!s || s.source !== 'market') return sum;
-    return sum + (s.price || 0) * (m.qty || 1);
-  }, 0);
-});
+const recipeMarketCost = computed(() => recipeTotalCost.value);
 const recipeGatheredCount = computed(() => {
   if (!selectedRecipe.value) return 0;
-  return selectedRecipe.value.materials.filter(m => materialState.value[m.itemId]?.source === 'gathered').length;
+  let count = selectedRecipe.value.materials.filter(m => materialState.value[m.itemId]?.source === 'gathered').length;
+  // Count sub-recipe gathered materials too
+  for (const sub of Object.values(subRecipes.value)) {
+    if (sub?.recipe?.materials) {
+      count += sub.recipe.materials.filter(sm => materialState.value[sm.itemId]?.source === 'gathered').length;
+    }
+  }
+  return count;
 });
 
 // Computed: sell revenue (first result item)
@@ -259,44 +325,13 @@ const subRecipes = ref({});
 
 const toggleSubRecipe = async (material) => {
   const key = material.itemId;
-  if (subRecipes.value[key]) {
-    // Toggle expand/collapse
+  if (subRecipes.value[key]?.recipe) {
+    // Already loaded — just toggle expand/collapse
     subRecipes.value[key].expanded = !subRecipes.value[key].expanded;
     return;
   }
-
-  // First time — fetch the sub-recipe
-  subRecipes.value[key] = { loading: true, recipe: null, expanded: true };
-
-  try {
-    const recipeId = await findRecipeIdByName(material.name);
-    if (!recipeId) {
-      subRecipes.value[key].loading = false;
-      return;
-    }
-    const recipe = await fetchRecipe(recipeId);
-    subRecipes.value[key].recipe = recipe;
-    subRecipes.value[key].loading = false;
-
-    // Init material state + fetch prices for sub-materials
-    if (recipe?.materials) {
-      for (const sm of recipe.materials) {
-        if (!materialState.value[sm.itemId]) {
-          materialState.value[sm.itemId] = { source: 'market', price: null, priceSource: null, priceLoading: true };
-          // Fetch price
-          fetchMarketPrice(sm.itemId, recipeRegion.value).then(data => {
-            if (materialState.value[sm.itemId]) {
-              materialState.value[sm.itemId].price = data?.price || null;
-              materialState.value[sm.itemId].priceSource = data?.source || null;
-              materialState.value[sm.itemId].priceLoading = false;
-            }
-          });
-        }
-      }
-    }
-  } catch {
-    subRecipes.value[key].loading = false;
-  }
+  // Not loaded yet (shouldn't happen since auto-expand loads them, but handle it)
+  await autoExpandSubRecipe(material);
 };
 
 // ─── FORMATTING ──────────────────────────────────────────────────────────────
@@ -548,7 +583,7 @@ const silver = (n) => {
             @input="onRecipeSearch"
             @focus="showRecipeDropdown = recipeResults.length > 0"
             class="recipe-search"
-            placeholder="Search recipes... (e.g. Beer, Elixir of Fury, Plywood)"
+            :placeholder="recipeIndexReady ? 'Search recipes... (e.g. Beer, Elixir of Fury, Plywood)' : 'Loading recipe index...'"
           />
           <span v-if="recipeSearching" class="recipe-spinner">Searching...</span>
           <button v-if="selectedRecipe" class="recipe-clear" @click="clearRecipe">Clear</button>

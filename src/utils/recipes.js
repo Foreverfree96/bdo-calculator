@@ -153,6 +153,9 @@ const parseRecipeHtml = (html) => {
 let _allRecipes = null;
 let _allRecipesPromise = null;
 
+/** Pre-load the recipe index so first search is instant */
+export const preloadRecipeIndex = () => loadAllRecipes().catch(() => {});
+
 const loadAllRecipes = () => {
   if (_allRecipes) return Promise.resolve(_allRecipes);
   if (_allRecipesPromise) return _allRecipesPromise;
