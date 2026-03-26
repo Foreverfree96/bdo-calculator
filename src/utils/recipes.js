@@ -1,7 +1,7 @@
 // BDO Codex recipe scraper with localStorage caching
-// Uses corsproxy.io to bypass CORS restrictions
+// Uses codetabs.com CORS proxy to bypass CORS restrictions
 
-const PROXY = 'https://corsproxy.io/?url=';
+const PROXY = 'https://api.codetabs.com/v1/proxy/?quest=';
 const CODEX = 'https://bdocodex.com';
 const CACHE_KEY = 'bdo_recipe_cache';
 const CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
