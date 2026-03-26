@@ -99,8 +99,14 @@ const parseRecipeHtml = (html) => {
         );
         const hasRecipe = tipType === 'recipe' || tipType === 'recipekey' || hasCraftableLinks;
 
-        // Name from the text link (not the icon link)
-        const textLink = [...cell.querySelectorAll(`a[data-id="${dataId}"]`)].find(a => a.textContent.trim());
+        // Name from the text link (not the icon link inside the wrapper)
+        // The text link has class "item_grade_X" and contains the actual name, not qty numbers
+        const textLink = [...cell.querySelectorAll(`a[data-id="${dataId}"]`)].find(a => {
+          // Skip links inside icon wrappers (they contain qty/icons, not names)
+          if (a.closest('.iconset_wrapper_medium')) return false;
+          const text = a.textContent.trim();
+          return text && !/^\d+$/.test(text); // skip pure numbers
+        });
         const matName = textLink?.textContent?.trim() || `Item #${itemId}`;
 
         materials.push({ itemId, name: matName, qty, isGroup, isLocked, hasRecipe });
@@ -126,7 +132,11 @@ const parseRecipeHtml = (html) => {
         const parentWrapper = link.closest('.iconset_wrapper_medium');
         const qtyEl = parentWrapper?.querySelector('.quantity_small');
         const qtyText = qtyEl?.textContent?.trim() || '1';
-        const textLink = [...cell.querySelectorAll(`a[data-id="${dataId}"]`)].find(a => a.textContent.trim());
+        const textLink = [...cell.querySelectorAll(`a[data-id="${dataId}"]`)].find(a => {
+          if (a.closest('.iconset_wrapper_medium')) return false;
+          const text = a.textContent.trim();
+          return text && !/^\d+$/.test(text);
+        });
         results.push({
           itemId,
           name: textLink?.textContent?.trim() || `Item #${itemId}`,
