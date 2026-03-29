@@ -183,6 +183,7 @@ const craft = ref({
   hasValuePack: true,
   materials: [{ name: '', cost: null, qty: 1, gathered: false, hasRecipe: false, subMaterials: [], showSubs: false }],
   craftsPerSession: 1,
+  masteryLevel: 0,
 });
 const craftRegion = ref('na');
 
@@ -306,6 +307,27 @@ const removeMaterial = (i) => {
   matSearchStates.value = updated;
 };
 
+// Cooking/Alchemy mastery → average items per craft
+// At 0 mastery, base is 1-4 (avg 2.5). Higher mastery increases max procs.
+const CRAFT_MASTERY_YIELD = [
+  [0, 2.5], [50, 2.54], [100, 2.59], [150, 2.65], [200, 2.71], [250, 2.78],
+  [300, 2.85], [350, 2.93], [400, 3.01], [450, 3.10], [500, 3.19],
+  [550, 3.29], [600, 3.40], [650, 3.51], [700, 3.63], [750, 3.75],
+  [800, 3.88], [850, 4.00], [900, 4.13], [950, 4.26], [1000, 4.40],
+  [1100, 4.60], [1200, 4.80], [1300, 5.00], [1400, 5.20], [1500, 5.40],
+  [1600, 5.55], [1700, 5.70], [1800, 5.85], [1900, 6.00], [2000, 6.15],
+];
+const craftMasteryYield = computed(() => {
+  const m = craft.value.masteryLevel || 0;
+  if (m <= 0) return 2.5;
+  let yield_ = 2.5;
+  for (const [threshold, val] of CRAFT_MASTERY_YIELD) {
+    if (m >= threshold) yield_ = val;
+    else break;
+  }
+  return yield_;
+});
+
 const craftTotalMaterialCost = computed(() =>
   craft.value.materials.reduce((sum, m) => {
     if (m.gathered) return sum;
@@ -321,11 +343,15 @@ const craftTaxRate = computed(() => craft.value.hasValuePack ? 0.155 : 0.35);
 const craftRevenuePerItem = computed(() =>
   Math.floor((craft.value.sellPrice || 0) * (1 - craftTaxRate.value))
 );
-const craftProfitPerItem = computed(() => craftRevenuePerItem.value - craftTotalMaterialCost.value);
-const craftProfitPerSession = computed(() => craftProfitPerItem.value * (craft.value.craftsPerSession || 1));
+// Revenue per craft action = sell price after tax × avg items produced per craft
+const craftRevenuePerCraft = computed(() =>
+  Math.floor(craftRevenuePerItem.value * craftMasteryYield.value)
+);
+const craftProfitPerCraft = computed(() => craftRevenuePerCraft.value - craftTotalMaterialCost.value);
+const craftProfitPerSession = computed(() => craftProfitPerCraft.value * (craft.value.craftsPerSession || 1));
 const craftROI = computed(() => {
   if (!craftTotalMaterialCost.value) return 0;
-  return ((craftProfitPerItem.value / craftTotalMaterialCost.value) * 100).toFixed(1);
+  return ((craftProfitPerCraft.value / craftTotalMaterialCost.value) * 100).toFixed(1);
 });
 
 // ─── ENHANCEMENT ROI CALCULATOR ──────────────────────────────────────────────
@@ -1263,6 +1289,17 @@ const silver = (n) => {
           </div>
         </div>
 
+        <div class="field-row">
+          <div class="field">
+            <label>Cooking/Alchemy Mastery</label>
+            <input type="number" v-model.number="craft.masteryLevel" min="0" max="2000" placeholder="e.g. 800" />
+          </div>
+          <div class="field">
+            <label>Avg Items Per Craft</label>
+            <input type="text" :value="craftMasteryYield.toFixed(2) + ' items'" disabled class="mastery-display" />
+          </div>
+        </div>
+
         <h3 class="sub-heading">Materials <span v-if="craftLoadingRecipe" class="recipe-spinner">loading recipe…</span></h3>
         <div v-for="(m, i) in craft.materials" :key="i" class="material-row-wrap">
           <div class="material-row">
@@ -1312,16 +1349,24 @@ const silver = (n) => {
 
         <div class="results-card">
           <div class="result-row">
-            <span>Total Material Cost</span>
+            <span>Total Material Cost (per craft)</span>
             <span class="val">{{ silver(craftTotalMaterialCost) }}</span>
           </div>
           <div class="result-row">
-            <span>Revenue After Tax</span>
+            <span>Revenue Per Item (after tax)</span>
             <span class="val">{{ silver(craftRevenuePerItem) }}</span>
           </div>
-          <div class="result-row" :class="craftProfitPerItem >= 0 ? '' : 'loss-row'">
-            <span>Profit Per Item</span>
-            <span class="val" :class="craftProfitPerItem >= 0 ? 'profit' : 'loss'">{{ silver(craftProfitPerItem) }}</span>
+          <div v-if="craft.masteryLevel > 0" class="result-row">
+            <span>Mastery Yield</span>
+            <span class="val" style="color:#f59e0b;">{{ craftMasteryYield.toFixed(2) }} items/craft</span>
+          </div>
+          <div class="result-row">
+            <span>Revenue Per Craft{{ craft.masteryLevel > 0 ? ' (× ' + craftMasteryYield.toFixed(2) + ' items)' : '' }}</span>
+            <span class="val">{{ silver(craftRevenuePerCraft) }}</span>
+          </div>
+          <div class="result-row" :class="craftProfitPerCraft >= 0 ? '' : 'loss-row'">
+            <span>Profit Per Craft</span>
+            <span class="val" :class="craftProfitPerCraft >= 0 ? 'profit' : 'loss'">{{ silver(craftProfitPerCraft) }}</span>
           </div>
           <div class="result-row highlight" :class="craftProfitPerSession >= 0 ? '' : 'loss-row'">
             <span>Profit Per Session (x{{ craft.craftsPerSession || 1 }})</span>
