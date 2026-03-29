@@ -1,11 +1,11 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
 import { searchRecipes, fetchRecipe, findRecipeIdByName, preloadRecipeIndex } from './utils/recipes.js';
-import { fetchMarketPrice, fetchMarketPrices, searchMarketItems } from './utils/arsha.js';
+import { fetchMarketPrice, fetchMarketPrices, searchMarketItems, fetchMinListedPrice, fetchItemFullData } from './utils/arsha.js';
 import { getMasteryBonus, getBoxSellPrice, getBoxLimit, BOX_TIERS } from './utils/imperial.js';
 import { TRADING_LEVELS, ALL_TRADE_ITEMS, PICKUP_LOCATIONS, SELL_LOCATIONS, DISTANCE_BONUS, getBargainBonus, getCrateSellPrice } from './utils/trading.js';
 import { searchLocalItems, getStaticPrice } from './utils/items.js';
-import { PROCESSING_CATEGORIES, PROCESSING_RECIPES } from './utils/processing.js';
+import { PROCESSING_CATEGORIES, PROCESSING_RECIPES, DRIED_FISH_IDS, FISH_VENDOR_PRICES } from './utils/processing.js';
 import RecipeMaterial from './components/RecipeMaterial.vue';
 
 const tab = ref('marketplace');
@@ -924,23 +924,82 @@ const selectProcRecipe = async (recipe) => {
   procInputSearch.value = {};
   procOutputSearch.value = {};
   // Populate inputs
-  proc.value.inputs = recipe.inputs.map(m => ({ name: m.name, cost: null, qty: m.qty }));
+  proc.value.inputs = recipe.inputs.map(m => ({ name: m.name, cost: null, qty: m.qty, source: '' }));
   // Populate outputs
-  proc.value.outputs = recipe.outputs.map(m => ({ name: m.name, sellPrice: null, qty: m.qty }));
+  proc.value.outputs = recipe.outputs.map(m => ({ name: m.name, sellPrice: null, qty: m.qty, stock: 0, source: '' }));
   // Set search queries
   recipe.inputs.forEach((m, i) => { getProcInputSearch(i).query = m.name; });
   recipe.outputs.forEach((m, i) => { getProcOutputSearch(i).query = m.name; });
-  // Fetch all prices in parallel
   const region = procRegion.value;
+
+  // Helper: resolve input price — try market, then vendor/static
+  const resolveInputPrice = async (name, idx) => {
+    // Check fish vendor prices first (raw fish not on CM)
+    if (FISH_VENDOR_PRICES[name]) {
+      proc.value.inputs[idx].cost = FISH_VENDOR_PRICES[name];
+      proc.value.inputs[idx].source = 'npc';
+      return;
+    }
+    // Try marketplace search → item data
+    try {
+      const results = await searchMarketItems(name, region);
+      const match = results.find(r => r.name.toLowerCase() === name.toLowerCase()) || results[0];
+      if (match?.id) {
+        const data = await fetchItemFullData(match.id, region);
+        if (data) {
+          proc.value.inputs[idx].cost = data.price;
+          proc.value.inputs[idx].source = data.stock > 0 ? 'market' : 'lastSold';
+          return;
+        }
+      }
+    } catch { /* continue */ }
+    // Static fallback
+    const sp = getStaticPrice(name);
+    if (sp) {
+      proc.value.inputs[idx].cost = sp;
+      proc.value.inputs[idx].source = 'static';
+    }
+  };
+
+  // Helper: resolve output price — min listed with stock, or priceMax fallback
+  const resolveOutputPrice = async (name, idx) => {
+    // Check if we have a known item ID (dried fish etc.)
+    const knownId = DRIED_FISH_IDS[name];
+    if (knownId) {
+      const orderData = await fetchMinListedPrice(knownId, region);
+      if (orderData) {
+        proc.value.outputs[idx].sellPrice = orderData.minListed;
+        proc.value.outputs[idx].stock = orderData.stock;
+        proc.value.outputs[idx].source = orderData.stock > 0 ? 'listed' : 'maxPrice';
+        return;
+      }
+    }
+    // Fallback: search by name → get orders
+    try {
+      const results = await searchMarketItems(name, region);
+      const match = results.find(r => r.name.toLowerCase() === name.toLowerCase()) || results[0];
+      if (match?.id) {
+        const orderData = await fetchMinListedPrice(match.id, region);
+        if (orderData) {
+          proc.value.outputs[idx].sellPrice = orderData.minListed;
+          proc.value.outputs[idx].stock = orderData.stock;
+          proc.value.outputs[idx].source = orderData.stock > 0 ? 'listed' : 'maxPrice';
+          return;
+        }
+      }
+    } catch { /* continue */ }
+    // Static fallback
+    const sp = getStaticPrice(name);
+    if (sp) {
+      proc.value.outputs[idx].sellPrice = sp;
+      proc.value.outputs[idx].source = 'static';
+    }
+  };
+
+  // Fetch all prices in parallel
   await Promise.all([
-    ...recipe.inputs.map(async (m, i) => {
-      const price = await resolveItem({ name: m.name }, region);
-      if (price) proc.value.inputs[i].cost = price;
-    }),
-    ...recipe.outputs.map(async (m, i) => {
-      const price = await resolveItem({ name: m.name }, region);
-      if (price) proc.value.outputs[i].sellPrice = price;
-    }),
+    ...recipe.inputs.map((m, i) => resolveInputPrice(m.name, i)),
+    ...recipe.outputs.map((m, i) => resolveOutputPrice(m.name, i)),
   ]);
   procLoadingRecipe.value = false;
 };
@@ -978,8 +1037,18 @@ const selectProcInput = async (i, item) => {
   s.showDropdown = false;
   proc.value.inputs[i].name = item.name;
   s.priceLoading = true;
+  // Check fish vendor prices first
+  if (FISH_VENDOR_PRICES[item.name]) {
+    proc.value.inputs[i].cost = FISH_VENDOR_PRICES[item.name];
+    proc.value.inputs[i].source = 'npc';
+    s.priceLoading = false;
+    return;
+  }
   const price = await resolveItem(item, procRegion.value);
-  if (price) proc.value.inputs[i].cost = price;
+  if (price) {
+    proc.value.inputs[i].cost = price;
+    proc.value.inputs[i].source = 'market';
+  }
   s.priceLoading = false;
 };
 
@@ -996,7 +1065,21 @@ const selectProcOutput = async (i, item) => {
   s.showDropdown = false;
   proc.value.outputs[i].name = item.name;
   s.priceLoading = true;
-  const price = await resolveItem(item, procRegion.value);
+  const region = procRegion.value;
+  // Try orders endpoint for min listed price with stock
+  const itemId = item.id || DRIED_FISH_IDS[item.name];
+  if (itemId) {
+    const orderData = await fetchMinListedPrice(itemId, region);
+    if (orderData) {
+      proc.value.outputs[i].sellPrice = orderData.minListed;
+      proc.value.outputs[i].stock = orderData.stock;
+      proc.value.outputs[i].source = orderData.stock > 0 ? 'listed' : 'maxPrice';
+      s.priceLoading = false;
+      return;
+    }
+  }
+  // Fallback to resolveItem
+  const price = await resolveItem(item, region);
   if (price) proc.value.outputs[i].sellPrice = price;
   s.priceLoading = false;
 };
@@ -1613,7 +1696,13 @@ const silver = (n) => {
             <input type="number" v-model.number="m.qty" class="mat-qty" min="1" placeholder="Qty" />
             <button class="mat-remove" @click="removeProcInput(i)" v-if="proc.inputs.length > 1">x</button>
           </div>
-          <span v-if="getProcInputSearch(i).priceLoading" class="hint" style="margin-left: 4px;">fetching price…</span>
+          <div class="proc-price-info">
+            <span v-if="getProcInputSearch(i).priceLoading" class="hint">fetching price…</span>
+            <span v-else-if="m.source === 'npc'" class="hint" style="color:#f59e0b;">NPC vendor price</span>
+            <span v-else-if="m.source === 'market'" class="hint" style="color:#22c55e;">Market price (in stock)</span>
+            <span v-else-if="m.source === 'lastSold'" class="hint" style="color:#a78bfa;">Last sold price</span>
+            <span v-else-if="m.source === 'static'" class="hint" style="color:#6b7280;">Estimated price</span>
+          </div>
         </div>
         <button class="btn-add-mat" @click="addProcInput">+ Add Input</button>
 
@@ -1641,7 +1730,12 @@ const silver = (n) => {
             <input type="number" v-model.number="o.qty" class="mat-qty" min="1" placeholder="Qty" />
             <button class="mat-remove" @click="removeProcOutput(i)" v-if="proc.outputs.length > 1">x</button>
           </div>
-          <span v-if="getProcOutputSearch(i).priceLoading" class="hint" style="margin-left: 4px;">fetching price…</span>
+          <div class="proc-price-info">
+            <span v-if="getProcOutputSearch(i).priceLoading" class="hint">fetching price…</span>
+            <span v-else-if="o.source === 'listed'" class="hint" style="color:#22c55e;">Min listed: {{ o.sellPrice?.toLocaleString() }} ({{ o.stock }} in stock)</span>
+            <span v-else-if="o.source === 'maxPrice'" class="hint" style="color:#f59e0b;">Max listing price (0 in stock)</span>
+            <span v-else-if="o.source === 'static'" class="hint" style="color:#6b7280;">Estimated price</span>
+          </div>
         </div>
         <button class="btn-add-mat" @click="addProcOutput">+ Add Output</button>
 
@@ -2024,6 +2118,7 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .sub-mat-qty { font-size: 0.8rem; color: #888; min-width: 30px; }
 .sub-mat-total { font-size: 0.8rem; color: #4caf50; min-width: 80px; text-align: right; }
 .mastery-display { background: #111 !important; color: #f59e0b !important; font-weight: 600; text-align: center; }
+.proc-price-info { margin-left: 4px; margin-top: 2px; margin-bottom: 4px; font-size: 0.78rem; }
 
 .results-card {
   background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px;

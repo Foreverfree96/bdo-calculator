@@ -66,6 +66,79 @@ export const fetchMarketPrice = async (itemId, region = 'na') => {
  * @param {string} region
  * @returns {Promise<Map<number, {price: number, stock: number, source: string}>>}
  */
+/**
+ * Search marketplace items by name.
+ * @param {string} name
+ * @param {string} region
+ * @returns {Promise<Array<{id: number, name: string, grade: number}>>}
+ */
+export const searchMarketItems = async (name, region = 'na') => {
+  try {
+    const res = await fetch(`${BASE}/${region}/util/search?lang=en&name=${encodeURIComponent(name)}`);
+    if (res.ok) {
+      const data = await res.json();
+      return Array.isArray(data) ? data : [];
+    }
+  } catch { /* ignore */ }
+  return [];
+};
+
+/**
+ * Fetch full item data including priceMin, priceMax, currentStock.
+ * @param {number} itemId
+ * @param {string} region
+ * @returns {Promise<{price: number, stock: number, priceMin: number, priceMax: number, source: string}|null>}
+ */
+export const fetchItemFullData = async (itemId, region = 'na') => {
+  try {
+    const res = await fetch(`${BASE}/${region}/item?id=${itemId}`);
+    if (res.ok) {
+      const data = await res.json();
+      const item = Array.isArray(data) ? data[0] : data;
+      if (item) {
+        return {
+          price: item.lastSoldPrice || item.basePrice || 0,
+          stock: item.currentStock ?? 0,
+          priceMin: item.priceMin ?? 0,
+          priceMax: item.priceMax ?? 0,
+          source: 'market',
+        };
+      }
+    }
+  } catch { /* ignore */ }
+  return null;
+};
+
+/**
+ * Fetch order book for an item — returns the lowest sell price with stock.
+ * If no sellers, returns the priceMax (highest possible listing price).
+ * @param {number} itemId
+ * @param {string} region
+ * @returns {Promise<{minListed: number, stock: number}|null>}
+ */
+export const fetchMinListedPrice = async (itemId, region = 'na') => {
+  try {
+    const res = await fetch(`${BASE}/${region}/orders?id=${itemId}`);
+    if (res.ok) {
+      const data = await res.json();
+      const orders = data?.orders || [];
+      // Find lowest price where sellers > 0
+      const sellOrders = orders.filter(o => o.sellers > 0).sort((a, b) => a.price - b.price);
+      if (sellOrders.length > 0) {
+        return { minListed: sellOrders[0].price, stock: sellOrders[0].sellers };
+      }
+    }
+  } catch { /* ignore */ }
+  // Fallback: use item endpoint for priceMax
+  try {
+    const full = await fetchItemFullData(itemId, region);
+    if (full) {
+      return { minListed: full.priceMax || full.price, stock: full.stock };
+    }
+  } catch { /* ignore */ }
+  return null;
+};
+
 export const fetchMarketPrices = async (itemIds, region = 'na') => {
   const results = new Map();
   const chunks = [];
