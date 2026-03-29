@@ -211,10 +211,16 @@ const selectCraftItem = async (item) => {
           const s = getMatSearch(i);
           s.query = m.name;
         });
-        // Fetch live prices for all materials in parallel
+        // Fetch live prices for all materials in parallel using recipe itemIds
         const region = craftRegion.value;
         await Promise.all(recipe.materials.map(async (m, i) => {
           try {
+            // Use itemId from recipe directly (fastest + handles NPC items)
+            if (m.itemId) {
+              const data = await fetchMarketPrice(m.itemId, region);
+              if (data?.price) { craft.value.materials[i].cost = data.price; return; }
+            }
+            // Fallback: search by name
             const results = await searchMarketItems(m.name, region);
             const match = results.find(r => r.name.toLowerCase() === m.name.toLowerCase()) || results[0];
             if (match?.id) {
