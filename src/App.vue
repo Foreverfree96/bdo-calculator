@@ -916,7 +916,18 @@ const filteredProcRecipes = computed(() => {
 });
 const hideProcRecipeDropdown = () => setTimeout(() => { procRecipeShowDropdown.value = false; }, 150);
 
+// Track the currently selected recipe so category changes don't lose it
+const procSelectedRecipe = ref(null);
+
+// When category changes, clear search query so dropdown shows all new-category items
+// but keep the selected recipe inputs/outputs intact
+watch(() => proc.value.category, () => {
+  procRecipeQuery.value = '';
+  procRecipeShowDropdown.value = false;
+});
+
 const selectProcRecipe = async (recipe) => {
+  procSelectedRecipe.value = recipe;
   procRecipeQuery.value = recipe.name;
   procRecipeShowDropdown.value = false;
   procLoadingRecipe.value = true;
@@ -932,7 +943,7 @@ const selectProcRecipe = async (recipe) => {
   recipe.outputs.forEach((m, i) => { getProcOutputSearch(i).query = m.name; });
   const region = procRegion.value;
 
-  // Helper: resolve input price — try market, then vendor/static
+  // Helper: resolve input price — fish vendor price, then full resolveItem fallback chain
   const resolveInputPrice = async (name, idx) => {
     // Check fish vendor prices first (raw fish not on CM)
     if (FISH_VENDOR_PRICES[name]) {
@@ -940,24 +951,11 @@ const selectProcRecipe = async (recipe) => {
       proc.value.inputs[idx].source = 'npc';
       return;
     }
-    // Try marketplace search → item data
-    try {
-      const results = await searchMarketItems(name, region);
-      const match = results.find(r => r.name.toLowerCase() === name.toLowerCase()) || results[0];
-      if (match?.id) {
-        const data = await fetchItemFullData(match.id, region);
-        if (data) {
-          proc.value.inputs[idx].cost = data.price;
-          proc.value.inputs[idx].source = data.stock > 0 ? 'market' : 'lastSold';
-          return;
-        }
-      }
-    } catch { /* continue */ }
-    // Static fallback
-    const sp = getStaticPrice(name);
-    if (sp) {
-      proc.value.inputs[idx].cost = sp;
-      proc.value.inputs[idx].source = 'static';
+    // Use resolveItem (3-tier: API by ID, API name search, static fallback)
+    const price = await resolveItem({ name }, region);
+    if (price) {
+      proc.value.inputs[idx].cost = price;
+      proc.value.inputs[idx].source = 'market';
     }
   };
 
@@ -1732,9 +1730,14 @@ const silver = (n) => {
           </div>
           <div class="proc-price-info">
             <span v-if="getProcOutputSearch(i).priceLoading" class="hint">fetching price…</span>
-            <span v-else-if="o.source === 'listed'" class="hint" style="color:#22c55e;">Min listed: {{ o.sellPrice?.toLocaleString() }} ({{ o.stock }} in stock)</span>
-            <span v-else-if="o.source === 'maxPrice'" class="hint" style="color:#f59e0b;">Max listing price (0 in stock)</span>
-            <span v-else-if="o.source === 'static'" class="hint" style="color:#6b7280;">Estimated price</span>
+            <template v-else-if="o.sellPrice">
+              <span v-if="o.source === 'listed'" class="hint" style="color:#22c55e;">Min listed: {{ o.sellPrice?.toLocaleString() }} ({{ o.stock }} in stock)</span>
+              <span v-else-if="o.source === 'maxPrice'" class="hint" style="color:#f59e0b;">Max listing price (0 in stock)</span>
+              <span v-else-if="o.source === 'static'" class="hint" style="color:#6b7280;">Estimated price</span>
+              <span class="hint" style="color:#60a5fa; margin-left: 8px;">
+                Sell price: {{ Math.floor((o.source === 'listed' ? (o.sellPrice - 1) : o.sellPrice) * (1 - procTaxRate)).toLocaleString() }} after tax
+              </span>
+            </template>
           </div>
         </div>
         <button class="btn-add-mat" @click="addProcOutput">+ Add Output</button>
