@@ -323,6 +323,14 @@ export const COMMON_ITEMS = [
   { name: 'Gem Polisher', cat: 'Misc', price: 5000 },
 ];
 
+/** Look up static price by exact item name */
+export const getStaticPrice = (name) => {
+  if (!name) return null;
+  const lower = name.toLowerCase();
+  const item = COMMON_ITEMS.find(i => i.name.toLowerCase() === lower);
+  return item?.price || null;
+};
+
 /** Format silver values for display */
 const formatPrice = (p) => {
   if (p >= 1_000_000_000) return (p / 1_000_000_000).toFixed(1) + 'B';

@@ -4,7 +4,7 @@ import { searchRecipes, fetchRecipe, findRecipeIdByName, preloadRecipeIndex } fr
 import { fetchMarketPrice, fetchMarketPrices, searchMarketItems } from './utils/arsha.js';
 import { getMasteryBonus, getBoxSellPrice, getBoxLimit, BOX_TIERS } from './utils/imperial.js';
 import { TRADING_LEVELS, ALL_TRADE_ITEMS, PICKUP_LOCATIONS, SELL_LOCATIONS, DISTANCE_BONUS, getBargainBonus, getCrateSellPrice } from './utils/trading.js';
-import { searchLocalItems } from './utils/items.js';
+import { searchLocalItems, getStaticPrice } from './utils/items.js';
 import RecipeMaterial from './components/RecipeMaterial.vue';
 
 const tab = ref('marketplace');
@@ -216,22 +216,34 @@ const selectCraftItem = async (item) => {
           const s = getMatSearch(i);
           s.query = m.name;
         });
-        // Fetch live prices + sub-recipes in parallel
+        // Helper: try all price sources for a material
         const region = craftRegion.value;
+        const fetchMatPrice = async (name, itemId) => {
+          // 1. Try by item ID (market + NPC vendor)
+          if (itemId) {
+            try {
+              const data = await fetchMarketPrice(itemId, region);
+              if (data?.price) return data.price;
+            } catch { /* continue */ }
+          }
+          // 2. Try marketplace name search
+          try {
+            const results = await searchMarketItems(name, region);
+            const match = results.find(r => r.name.toLowerCase() === name.toLowerCase()) || results[0];
+            if (match?.id) {
+              const data = await fetchMarketPrice(match.id, region);
+              if (data?.price) return data.price;
+            }
+          } catch { /* continue */ }
+          // 3. Fallback to static price from COMMON_ITEMS
+          return getStaticPrice(name);
+        };
+
+        // Fetch live prices + sub-recipes in parallel
         await Promise.all(recipe.materials.map(async (m, i) => {
           try {
-            // Fetch price
-            if (m.itemId) {
-              const data = await fetchMarketPrice(m.itemId, region);
-              if (data?.price) craft.value.materials[i].cost = data.price;
-            } else {
-              const results = await searchMarketItems(m.name, region);
-              const match = results.find(r => r.name.toLowerCase() === m.name.toLowerCase()) || results[0];
-              if (match?.id) {
-                const data = await fetchMarketPrice(match.id, region);
-                if (data?.price) craft.value.materials[i].cost = data.price;
-              }
-            }
+            const price = await fetchMatPrice(m.name, m.itemId);
+            if (price) craft.value.materials[i].cost = price;
             // Fetch sub-recipe if this material is craftable
             if (m.hasRecipe) {
               const subId = await findRecipeIdByName(m.name);
@@ -239,17 +251,8 @@ const selectCraftItem = async (item) => {
                 const subRecipe = await fetchRecipe(subId);
                 if (subRecipe?.materials?.length) {
                   const subs = await Promise.all(subRecipe.materials.map(async (sm) => {
-                    let price = null;
-                    if (sm.itemId) {
-                      const d = await fetchMarketPrice(sm.itemId, region);
-                      price = d?.price || null;
-                    }
-                    if (!price) {
-                      const sr = await searchMarketItems(sm.name, region);
-                      const smatch = sr.find(r => r.name.toLowerCase() === sm.name.toLowerCase()) || sr[0];
-                      if (smatch?.id) { const d = await fetchMarketPrice(smatch.id, region); price = d?.price || null; }
-                    }
-                    return { name: sm.name, qty: sm.qty || 1, cost: price, gathered: false };
+                    const subPrice = await fetchMatPrice(sm.name, sm.itemId);
+                    return { name: sm.name, qty: sm.qty || 1, cost: subPrice, gathered: false };
                   }));
                   craft.value.materials[i].subMaterials = subs;
                 }
