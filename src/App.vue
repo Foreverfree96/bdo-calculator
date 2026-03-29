@@ -95,29 +95,66 @@ const itemSearchState = () => ({
 const doItemSearch = (state, region) => {
   clearTimeout(state.timeout);
   if (!state.query || state.query.length < 1) { state.results = []; state.showDropdown = false; return; }
-  // Instant local results
-  const local = searchLocalItems(state.query).map(i => ({ name: i.name, id: null, cat: i.cat, local: true }));
+  // Instant local results with price hints
+  const local = searchLocalItems(state.query).map(i => ({ name: i.name, id: null, cat: i.cat, priceHint: i.priceHint, local: true }));
   state.results = local;
   state.showDropdown = local.length > 0;
-  // Then fetch API results after delay
+  // Then fetch API results + live prices after delay
   if (state.query.length >= 2) {
     state.timeout = setTimeout(async () => {
       state.searching = true;
       const api = await searchMarketItems(state.query, region);
-      // Merge: local first, then API results not already shown
       const localNames = new Set(local.map(l => l.name.toLowerCase()));
-      const merged = [...local, ...api.filter(a => !localNames.has(a.name.toLowerCase()))];
+      const apiNew = api.filter(a => !localNames.has(a.name.toLowerCase()));
+      const merged = [...local, ...apiNew];
       state.results = merged;
       state.showDropdown = merged.length > 0;
       state.searching = false;
+      // Fetch live prices for all results in background
+      const toFetch = merged.filter(i => i.id);
+      if (toFetch.length > 0) {
+        const ids = toFetch.map(i => i.id);
+        const prices = await fetchMarketPrices(ids, region);
+        for (const item of merged) {
+          if (item.id && prices.has(item.id)) {
+            item.livePrice = prices.get(item.id).price;
+            item.priceHint = fmtSilver(prices.get(item.id).price);
+          }
+        }
+        state.results = [...merged]; // trigger reactivity
+      }
+      // Also resolve prices for local items that matched API names
+      for (const item of merged) {
+        if (item.local && !item.livePrice) {
+          const apiMatch = api.find(a => a.name.toLowerCase() === item.name.toLowerCase());
+          if (apiMatch?.id) {
+            item.id = apiMatch.id;
+            const data = await fetchMarketPrice(apiMatch.id, region);
+            if (data?.price) {
+              item.livePrice = data.price;
+              item.priceHint = fmtSilver(data.price);
+            }
+          }
+        }
+      }
+      state.results = [...merged]; // trigger reactivity again
     }, 400);
   }
+};
+
+const fmtSilver = (p) => {
+  if (p >= 1_000_000_000) return (p / 1_000_000_000).toFixed(1) + 'B';
+  if (p >= 1_000_000) return (p / 1_000_000).toFixed(1) + 'M';
+  if (p >= 1_000) return (p / 1_000).toFixed(1) + 'K';
+  return p.toString();
 };
 
 const hideDropdown = (state) => setTimeout(() => { state.showDropdown = false; }, 150);
 
 // Resolve a local item (no ID) to its market ID + price
 const resolveItem = async (item, region) => {
+  // Use pre-fetched live price if available
+  if (item.livePrice) return item.livePrice;
   if (item.id) {
     const data = await fetchMarketPrice(item.id, region);
     return data?.price || null;
@@ -129,6 +166,8 @@ const resolveItem = async (item, region) => {
     const data = await fetchMarketPrice(match.id, region);
     return data?.price || null;
   }
+  // Fallback to static price from items.js
+  if (item.price) return item.price;
   return null;
 };
 
