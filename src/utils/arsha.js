@@ -141,12 +141,11 @@ export const fetchMinListedPrice = async (itemId, region = 'na') => {
 
 /**
  * Fetch the best price to list an item at on the marketplace.
- * Strategy: find the lowest price slot where sellers === 0 (undercut).
- * If every slot has sellers, use the price 1 below the cheapest seller.
- * If no orders at all, use priceMax.
+ * Strategy: use the cheapest current seller price (that's the going rate).
+ * If no sellers at all, use priceMax.
  * @param {number} itemId
  * @param {string} region
- * @returns {Promise<{listPrice: number, stock: number, source: 'undercut'|'empty_slot'|'maxPrice'}|null>}
+ * @returns {Promise<{listPrice: number, stock: number, source: 'cheapest'|'maxPrice'}|null>}
  */
 export const fetchBestSellPrice = async (itemId, region = 'na') => {
   try {
@@ -155,25 +154,14 @@ export const fetchBestSellPrice = async (itemId, region = 'na') => {
       const data = await res.json();
       const orders = data?.orders || [];
       if (orders.length > 0) {
+        // Find all sell orders (where sellers > 0), sorted by price ascending
         const sellOrders = orders.filter(o => o.sellers > 0).sort((a, b) => a.price - b.price);
-        // Find the lowest price slot with 0 sellers (empty slot to list at)
-        const emptySlots = orders.filter(o => o.sellers === 0).sort((a, b) => a.price - b.price);
-        // Among empty slots, pick the cheapest one that's at or below the cheapest seller
         if (sellOrders.length > 0) {
-          const cheapestSeller = sellOrders[0].price;
           const totalStock = sellOrders.reduce((s, o) => s + o.sellers, 0);
-          // Look for empty slot below cheapest seller (undercut)
-          const undercut = emptySlots.find(o => o.price < cheapestSeller);
-          if (undercut) {
-            return { listPrice: undercut.price, stock: totalStock, source: 'empty_slot' };
-          }
-          // No empty slot below — just undercut by 1
-          return { listPrice: cheapestSeller - 1, stock: totalStock, source: 'undercut' };
+          // Use the cheapest seller price — that's the current market rate
+          return { listPrice: sellOrders[0].price, stock: totalStock, source: 'cheapest' };
         }
-        // No sellers at all — pick the highest empty slot (max revenue)
-        if (emptySlots.length > 0) {
-          return { listPrice: emptySlots[emptySlots.length - 1].price, stock: 0, source: 'empty_slot' };
-        }
+        // No sellers — use priceMax from item data
       }
     }
   } catch { /* ignore */ }

@@ -1319,9 +1319,8 @@ const silver = (n) => {
             <label>Sell Price (finished item) <span v-if="craftItemSearch.priceLoading" class="hint">fetching…</span></label>
             <input type="number" v-model.number="craft.sellPrice" placeholder="e.g. 100000000" />
             <div class="proc-price-info" v-if="craftSellPriceSource">
-              <span v-if="craftSellPriceSource === 'empty_slot'" class="hint" style="color:#22c55e;">Best empty slot ({{ craftSellPriceStock }} others listed)</span>
-              <span v-else-if="craftSellPriceSource === 'undercut'" class="hint" style="color:#60a5fa;">Undercut price ({{ craftSellPriceStock }} listed)</span>
-              <span v-else-if="craftSellPriceSource === 'maxPrice'" class="hint" style="color:#f59e0b;">Max listing price (0 listed)</span>
+              <span v-if="craftSellPriceSource === 'cheapest'" class="hint" style="color:#22c55e;">Lowest listed price ({{ craftSellPriceStock.toLocaleString() }} in stock)</span>
+              <span v-else-if="craftSellPriceSource === 'maxPrice'" class="hint" style="color:#f59e0b;">Max listing price (0 in stock)</span>
               <span v-else-if="craftSellPriceSource === 'fallback'" class="hint" style="color:#6b7280;">Last sold / estimated</span>
             </div>
           </div>
