@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
 import { searchRecipes, fetchRecipe, findRecipeIdByName, preloadRecipeIndex } from './utils/recipes.js';
-import { fetchMarketPrice, fetchMarketPrices, searchMarketItems, fetchMinListedPrice, fetchItemFullData } from './utils/arsha.js';
+import { fetchMarketPrice, fetchMarketPrices, searchMarketItems, fetchMinListedPrice, fetchItemFullData, fetchBestSellPrice } from './utils/arsha.js';
 import { getMasteryBonus, getBoxSellPrice, getBoxLimit, BOX_TIERS } from './utils/imperial.js';
 import { TRADING_LEVELS, ALL_TRADE_ITEMS, PICKUP_LOCATIONS, SELL_LOCATIONS, DISTANCE_BONUS, getBargainBonus, getCrateSellPrice } from './utils/trading.js';
 import { searchLocalItems, getStaticPrice } from './utils/items.js';
@@ -191,13 +191,49 @@ const craftRegion = ref('na');
 const craftItemSearch = ref(itemSearchState());
 const onCraftItemSearch = () => doItemSearch(craftItemSearch.value, craftRegion.value);
 const craftLoadingRecipe = ref(false);
+const craftSellPriceSource = ref('');
+const craftSellPriceStock = ref(0);
 const selectCraftItem = async (item) => {
   craftItemSearch.value.query = item.name;
   craftItemSearch.value.showDropdown = false;
   craftItemSearch.value.priceLoading = true;
-  // Fetch sell price
-  const price = await resolveItem(item, craftRegion.value);
-  if (price) craft.value.sellPrice = price;
+  craftSellPriceSource.value = '';
+  craftSellPriceStock.value = 0;
+  // Fetch sell price via orders (best listing slot)
+  const region = craftRegion.value;
+  let priceSet = false;
+  const itemId = item.id;
+  if (itemId) {
+    const bestPrice = await fetchBestSellPrice(itemId, region);
+    if (bestPrice) {
+      craft.value.sellPrice = bestPrice.listPrice;
+      craftSellPriceSource.value = bestPrice.source;
+      craftSellPriceStock.value = bestPrice.stock;
+      priceSet = true;
+    }
+  }
+  if (!priceSet) {
+    // Try name search → orders
+    try {
+      const results = await searchMarketItems(item.name, region);
+      const match = results.find(r => r.name.toLowerCase() === item.name.toLowerCase()) || results[0];
+      if (match?.id) {
+        const bestPrice = await fetchBestSellPrice(match.id, region);
+        if (bestPrice) {
+          craft.value.sellPrice = bestPrice.listPrice;
+          craftSellPriceSource.value = bestPrice.source;
+          craftSellPriceStock.value = bestPrice.stock;
+          priceSet = true;
+        }
+      }
+    } catch { /* continue */ }
+  }
+  if (!priceSet) {
+    // Final fallback
+    const price = await resolveItem(item, region);
+    if (price) craft.value.sellPrice = price;
+    craftSellPriceSource.value = 'fallback';
+  }
   craftItemSearch.value.priceLoading = false;
   // Auto-load recipe materials
   craftLoadingRecipe.value = true;
@@ -1282,6 +1318,12 @@ const silver = (n) => {
           <div class="field">
             <label>Sell Price (finished item) <span v-if="craftItemSearch.priceLoading" class="hint">fetching…</span></label>
             <input type="number" v-model.number="craft.sellPrice" placeholder="e.g. 100000000" />
+            <div class="proc-price-info" v-if="craftSellPriceSource">
+              <span v-if="craftSellPriceSource === 'empty_slot'" class="hint" style="color:#22c55e;">Best empty slot ({{ craftSellPriceStock }} others listed)</span>
+              <span v-else-if="craftSellPriceSource === 'undercut'" class="hint" style="color:#60a5fa;">Undercut price ({{ craftSellPriceStock }} listed)</span>
+              <span v-else-if="craftSellPriceSource === 'maxPrice'" class="hint" style="color:#f59e0b;">Max listing price (0 listed)</span>
+              <span v-else-if="craftSellPriceSource === 'fallback'" class="hint" style="color:#6b7280;">Last sold / estimated</span>
+            </div>
           </div>
           <div class="field">
             <label>Crafts per session</label>

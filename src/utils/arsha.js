@@ -139,6 +139,54 @@ export const fetchMinListedPrice = async (itemId, region = 'na') => {
   return null;
 };
 
+/**
+ * Fetch the best price to list an item at on the marketplace.
+ * Strategy: find the lowest price slot where sellers === 0 (undercut).
+ * If every slot has sellers, use the price 1 below the cheapest seller.
+ * If no orders at all, use priceMax.
+ * @param {number} itemId
+ * @param {string} region
+ * @returns {Promise<{listPrice: number, stock: number, source: 'undercut'|'empty_slot'|'maxPrice'}|null>}
+ */
+export const fetchBestSellPrice = async (itemId, region = 'na') => {
+  try {
+    const res = await fetch(`${BASE}/${region}/orders?id=${itemId}`);
+    if (res.ok) {
+      const data = await res.json();
+      const orders = data?.orders || [];
+      if (orders.length > 0) {
+        const sellOrders = orders.filter(o => o.sellers > 0).sort((a, b) => a.price - b.price);
+        // Find the lowest price slot with 0 sellers (empty slot to list at)
+        const emptySlots = orders.filter(o => o.sellers === 0).sort((a, b) => a.price - b.price);
+        // Among empty slots, pick the cheapest one that's at or below the cheapest seller
+        if (sellOrders.length > 0) {
+          const cheapestSeller = sellOrders[0].price;
+          const totalStock = sellOrders.reduce((s, o) => s + o.sellers, 0);
+          // Look for empty slot below cheapest seller (undercut)
+          const undercut = emptySlots.find(o => o.price < cheapestSeller);
+          if (undercut) {
+            return { listPrice: undercut.price, stock: totalStock, source: 'empty_slot' };
+          }
+          // No empty slot below — just undercut by 1
+          return { listPrice: cheapestSeller - 1, stock: totalStock, source: 'undercut' };
+        }
+        // No sellers at all — pick the highest empty slot (max revenue)
+        if (emptySlots.length > 0) {
+          return { listPrice: emptySlots[emptySlots.length - 1].price, stock: 0, source: 'empty_slot' };
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  // Fallback: use item endpoint for priceMax
+  try {
+    const full = await fetchItemFullData(itemId, region);
+    if (full) {
+      return { listPrice: full.priceMax || full.price, stock: full.stock, source: 'maxPrice' };
+    }
+  } catch { /* ignore */ }
+  return null;
+};
+
 export const fetchMarketPrices = async (itemIds, region = 'na') => {
   const results = new Map();
   const chunks = [];
