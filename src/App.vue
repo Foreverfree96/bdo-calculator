@@ -155,20 +155,25 @@ const hideDropdown = (state) => setTimeout(() => { state.showDropdown = false; }
 const resolveItem = async (item, region) => {
   // Use pre-fetched live price if available
   if (item.livePrice) return item.livePrice;
+  // Try by item ID
   if (item.id) {
-    const data = await fetchMarketPrice(item.id, region);
-    return data?.price || null;
+    try {
+      const data = await fetchMarketPrice(item.id, region);
+      if (data?.price) return data.price;
+    } catch { /* continue */ }
   }
-  // Local item — search API by exact name to get ID
-  const results = await searchMarketItems(item.name, region);
-  const match = results.find(r => r.name.toLowerCase() === item.name.toLowerCase()) || results[0];
-  if (match?.id) {
-    const data = await fetchMarketPrice(match.id, region);
-    return data?.price || null;
-  }
-  // Fallback to static price from items.js
+  // Try marketplace name search
+  try {
+    const results = await searchMarketItems(item.name, region);
+    const match = results.find(r => r.name.toLowerCase() === item.name.toLowerCase()) || results[0];
+    if (match?.id) {
+      const data = await fetchMarketPrice(match.id, region);
+      if (data?.price) return data.price;
+    }
+  } catch { /* continue */ }
+  // Fallback to static price
   if (item.price) return item.price;
-  return null;
+  return getStaticPrice(item.name);
 };
 
 // ─── CRAFTING ROI CALCULATOR ─────────────────────────────────────────────────
