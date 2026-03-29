@@ -351,6 +351,17 @@ const selectEnhBase = async (item) => {
   const price = await resolveItem(item, enhRegion.value);
   if (price) enhance.value.baseItemCost = price;
   enhBaseSearch.value.priceLoading = false;
+  // Auto-fill cron stone + memory fragment costs if not set
+  if (!enhance.value.cronStoneCost) {
+    fetchMarketPrice(16004, enhRegion.value).then(d => {
+      if (d?.price && !enhance.value.cronStoneCost) enhance.value.cronStoneCost = d.price;
+    });
+  }
+  if (!enhance.value.repairCost) {
+    fetchMarketPrice(44195, enhRegion.value).then(d => {
+      if (d?.price && !enhance.value.repairCost) enhance.value.repairCost = d.price;
+    });
+  }
 };
 
 // Enhancement target item search
@@ -641,6 +652,44 @@ const imp = ref({
   matCostPerBox: null,
 });
 
+// Imperial box item search
+const impItemSearch = ref(itemSearchState());
+const impLoadingRecipe = ref(false);
+const onImpItemSearch = () => doItemSearch(impItemSearch.value, 'na');
+const hideImpDropdown = () => hideDropdown(impItemSearch.value);
+const selectImpItem = async (item) => {
+  impItemSearch.value.query = item.name;
+  impItemSearch.value.showDropdown = false;
+  impLoadingRecipe.value = true;
+  // Look up the recipe for this imperial box to calculate material cost
+  try {
+    const recipeId = await findRecipeIdByName(item.name);
+    if (recipeId) {
+      const recipe = await fetchRecipe(recipeId);
+      if (recipe?.materials?.length) {
+        let totalCost = 0;
+        await Promise.all(recipe.materials.map(async (m) => {
+          let price = null;
+          if (m.itemId) {
+            try { const d = await fetchMarketPrice(m.itemId, 'na'); price = d?.price || null; } catch {}
+          }
+          if (!price) {
+            try {
+              const results = await searchMarketItems(m.name, 'na');
+              const match = results.find(r => r.name.toLowerCase() === m.name.toLowerCase()) || results[0];
+              if (match?.id) { const d = await fetchMarketPrice(match.id, 'na'); price = d?.price || null; }
+            } catch {}
+          }
+          if (!price) price = getStaticPrice(m.name);
+          totalCost += (price || 0) * (m.qty || 1);
+        }));
+        if (totalCost > 0) imp.value.matCostPerBox = totalCost;
+      }
+    }
+  } catch {}
+  impLoadingRecipe.value = false;
+};
+
 const impTier = computed(() => BOX_TIERS[imp.value.tierIndex]);
 const impMasteryBonus = computed(() => getMasteryBonus(imp.value.mastery));
 const impMasteryPct = computed(() => (impMasteryBonus.value * 100).toFixed(2));
@@ -688,13 +737,44 @@ const crateFilteredList = computed(() => {
   );
 });
 
-const selectCrate = (crate) => {
+const tradeLoadingMats = ref(false);
+const selectCrate = async (crate) => {
   crateQuery.value = crate.name;
   trade.value.basePrice = crate.basePrice;
   crateShowDropdown.value = false;
   // Auto-set from location if item has one
   if (crate.location && crate.location !== 'Crafted') {
     trade.value.from = crate.location;
+  }
+  // Auto-fill material cost for crafted crates
+  if (crate.location === 'Crafted' || crate.region === 'Crate') {
+    tradeLoadingMats.value = true;
+    try {
+      const recipeId = await findRecipeIdByName(crate.name);
+      if (recipeId) {
+        const recipe = await fetchRecipe(recipeId);
+        if (recipe?.materials?.length) {
+          let totalCost = 0;
+          await Promise.all(recipe.materials.map(async (m) => {
+            let price = null;
+            if (m.itemId) {
+              try { const d = await fetchMarketPrice(m.itemId, 'na'); price = d?.price || null; } catch {}
+            }
+            if (!price) {
+              try {
+                const results = await searchMarketItems(m.name, 'na');
+                const match = results.find(r => r.name.toLowerCase() === m.name.toLowerCase()) || results[0];
+                if (match?.id) { const d = await fetchMarketPrice(match.id, 'na'); price = d?.price || null; }
+              } catch {}
+            }
+            if (!price) price = getStaticPrice(m.name);
+            totalCost += (price || 0) * (m.qty || 1);
+          }));
+          if (totalCost > 0) trade.value.matCost = totalCost;
+        }
+      }
+    } catch {}
+    tradeLoadingMats.value = false;
   }
 };
 const clearCrate = () => {
@@ -1209,7 +1289,7 @@ const silver = (n) => {
 
         <div class="field-row">
           <div class="field">
-            <label>Cron Stone Cost (each)</label>
+            <label>Cron Stone Cost (each) <span v-if="enhance.cronStoneCost" class="hint" style="color:#4caf50;">auto-filled</span></label>
             <input type="number" v-model.number="enhance.cronStoneCost" placeholder="0 if not using" />
           </div>
           <div class="field">
@@ -1220,7 +1300,7 @@ const silver = (n) => {
 
         <div class="field-row">
           <div class="field">
-            <label>Repair Cost (per fail)</label>
+            <label>Repair Cost (per fail) <span v-if="enhance.repairCost" class="hint" style="color:#4caf50;">auto-filled</span></label>
             <input type="number" v-model.number="enhance.repairCost" placeholder="Memory frags etc" />
           </div>
           <div class="field">
@@ -1540,6 +1620,26 @@ const silver = (n) => {
         <p v-if="showImpFormula" class="hint formula-box">Base Price x (2.50 + Mastery Bonus). No marketplace tax. Daily limit = CP / 2.</p>
 
         <div class="field-row">
+          <div class="field" style="position:relative;">
+            <label>Search Imperial Box <span v-if="impLoadingRecipe" class="recipe-spinner">calculating cost…</span></label>
+            <input
+              v-model="impItemSearch.query"
+              @input="onImpItemSearch"
+              @blur="hideImpDropdown"
+              @focus="impItemSearch.results.length && (impItemSearch.showDropdown = true)"
+              placeholder="e.g. Guru's Cooking Box"
+            />
+            <span v-if="impItemSearch.searching" class="recipe-spinner">searching…</span>
+            <div v-if="impItemSearch.showDropdown && impItemSearch.results.length" class="recipe-dropdown">
+              <div v-for="item in impItemSearch.results.slice(0, 20)" :key="item.id" class="recipe-dropdown-item" @mousedown.prevent="selectImpItem(item)">
+                <span class="recipe-dropdown-name">{{ item.name }}</span>
+                <span class="hint">{{ item.cat || ('ID ' + item.id) }}</span><span v-if="item.priceHint" class="price-hint">~{{ item.priceHint }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="field-row">
           <div class="field">
             <label>Cooking Mastery</label>
             <input type="number" v-model.number="imp.mastery" min="0" max="3000" placeholder="0" />
@@ -1558,7 +1658,7 @@ const silver = (n) => {
             </select>
           </div>
           <div class="field">
-            <label>Material Cost Per Box</label>
+            <label>Material Cost Per Box <span v-if="impLoadingRecipe" class="hint">calculating…</span></label>
             <input type="number" v-model.number="imp.matCostPerBox" placeholder="e.g. 200000" />
           </div>
         </div>
@@ -1654,7 +1754,7 @@ const silver = (n) => {
             <input type="number" v-model.number="trade.basePrice" placeholder="e.g. 197280" />
           </div>
           <div class="field">
-            <label>Material Cost Per Unit</label>
+            <label>Material Cost Per Unit <span v-if="tradeLoadingMats" class="hint">calculating…</span></label>
             <input type="number" v-model.number="trade.matCost" placeholder="e.g. 30000" />
           </div>
         </div>
