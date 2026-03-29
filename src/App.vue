@@ -5,6 +5,7 @@ import { fetchMarketPrice, fetchMarketPrices, searchMarketItems } from './utils/
 import { getMasteryBonus, getBoxSellPrice, getBoxLimit, BOX_TIERS } from './utils/imperial.js';
 import { TRADING_LEVELS, ALL_TRADE_ITEMS, PICKUP_LOCATIONS, SELL_LOCATIONS, DISTANCE_BONUS, getBargainBonus, getCrateSellPrice } from './utils/trading.js';
 import { searchLocalItems, getStaticPrice } from './utils/items.js';
+import { PROCESSING_CATEGORIES, PROCESSING_RECIPES } from './utils/processing.js';
 import RecipeMaterial from './components/RecipeMaterial.vue';
 
 const tab = ref('marketplace');
@@ -894,11 +895,55 @@ const tradeROI = computed(() => {
 // ─── PROCESSING ROI CALCULATOR ───────────────────────────────────────────────
 const proc = ref({
   hasValuePack: true,
+  category: '',
   inputs: [{ name: '', cost: null, qty: 1 }],
   outputs: [{ name: '', sellPrice: null, qty: 1 }],
   batchesPerSession: 1,
   masteryLevel: 0,
 });
+
+// Processing recipe selection
+const procRecipeQuery = ref('');
+const procRecipeShowDropdown = ref(false);
+const procLoadingRecipe = ref(false);
+const filteredProcRecipes = computed(() => {
+  const cat = proc.value.category;
+  const q = procRecipeQuery.value.trim().toLowerCase();
+  let list = PROCESSING_RECIPES;
+  if (cat) list = list.filter(r => r.category === cat);
+  if (q) list = list.filter(r => r.name.toLowerCase().includes(q));
+  return list;
+});
+const hideProcRecipeDropdown = () => setTimeout(() => { procRecipeShowDropdown.value = false; }, 150);
+
+const selectProcRecipe = async (recipe) => {
+  procRecipeQuery.value = recipe.name;
+  procRecipeShowDropdown.value = false;
+  procLoadingRecipe.value = true;
+  // Reset search states
+  procInputSearch.value = {};
+  procOutputSearch.value = {};
+  // Populate inputs
+  proc.value.inputs = recipe.inputs.map(m => ({ name: m.name, cost: null, qty: m.qty }));
+  // Populate outputs
+  proc.value.outputs = recipe.outputs.map(m => ({ name: m.name, sellPrice: null, qty: m.qty }));
+  // Set search queries
+  recipe.inputs.forEach((m, i) => { getProcInputSearch(i).query = m.name; });
+  recipe.outputs.forEach((m, i) => { getProcOutputSearch(i).query = m.name; });
+  // Fetch all prices in parallel
+  const region = procRegion.value;
+  await Promise.all([
+    ...recipe.inputs.map(async (m, i) => {
+      const price = await resolveItem({ name: m.name }, region);
+      if (price) proc.value.inputs[i].cost = price;
+    }),
+    ...recipe.outputs.map(async (m, i) => {
+      const price = await resolveItem({ name: m.name }, region);
+      if (price) proc.value.outputs[i].sellPrice = price;
+    }),
+  ]);
+  procLoadingRecipe.value = false;
+};
 
 // Processing mastery → bonus yield (approximate, based on BDO mastery brackets)
 const PROC_MASTERY_YIELD = [
@@ -1515,6 +1560,32 @@ const silver = (n) => {
           <div class="field">
             <label>Yield Multiplier</label>
             <input type="text" :value="procMasteryYield.toFixed(2) + 'x'" disabled class="mastery-display" />
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Processing Type</label>
+            <select v-model="proc.category" style="padding: 10px 12px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; color: #fff; font-size: 0.95rem; width: 100%;">
+              <option value="">All Categories</option>
+              <option v-for="cat in PROCESSING_CATEGORIES" :key="cat" :value="cat">{{ cat }}</option>
+            </select>
+          </div>
+          <div class="field" style="position:relative;">
+            <label>Select Conversion <span v-if="procLoadingRecipe" class="recipe-spinner">loading prices…</span></label>
+            <input
+              v-model="procRecipeQuery"
+              @input="procRecipeShowDropdown = filteredProcRecipes.length > 0"
+              @focus="procRecipeShowDropdown = filteredProcRecipes.length > 0"
+              @blur="hideProcRecipeDropdown"
+              placeholder="e.g. Copper Ore → Melted Copper"
+            />
+            <div v-if="procRecipeShowDropdown && filteredProcRecipes.length" class="recipe-dropdown" style="max-height:300px;">
+              <div v-for="r in filteredProcRecipes.slice(0, 30)" :key="r.name" class="recipe-dropdown-item" @mousedown.prevent="selectProcRecipe(r)">
+                <span class="recipe-dropdown-name">{{ r.name }}</span>
+                <span class="hint">{{ r.category }}</span>
+              </div>
+            </div>
           </div>
         </div>
 
