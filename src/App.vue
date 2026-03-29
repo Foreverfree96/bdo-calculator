@@ -175,7 +175,7 @@ const resolveItem = async (item, region) => {
 const craft = ref({
   sellPrice: null,
   hasValuePack: true,
-  materials: [{ name: '', cost: null, qty: 1 }],
+  materials: [{ name: '', cost: null, qty: 1, gathered: false, hasRecipe: false, subMaterials: [], showSubs: false }],
   craftsPerSession: 1,
 });
 const craftRegion = ref('na');
@@ -205,27 +205,55 @@ const selectCraftItem = async (item) => {
           name: m.name,
           cost: null,
           qty: m.qty || 1,
+          gathered: false,
+          hasRecipe: !!m.hasRecipe,
+          subMaterials: [],
+          showSubs: false,
+          itemId: m.itemId || null,
         }));
         // Set search state queries for each material
         recipe.materials.forEach((m, i) => {
           const s = getMatSearch(i);
           s.query = m.name;
         });
-        // Fetch live prices for all materials in parallel using recipe itemIds
+        // Fetch live prices + sub-recipes in parallel
         const region = craftRegion.value;
         await Promise.all(recipe.materials.map(async (m, i) => {
           try {
-            // Use itemId from recipe directly (fastest + handles NPC items)
+            // Fetch price
             if (m.itemId) {
               const data = await fetchMarketPrice(m.itemId, region);
-              if (data?.price) { craft.value.materials[i].cost = data.price; return; }
-            }
-            // Fallback: search by name
-            const results = await searchMarketItems(m.name, region);
-            const match = results.find(r => r.name.toLowerCase() === m.name.toLowerCase()) || results[0];
-            if (match?.id) {
-              const data = await fetchMarketPrice(match.id, region);
               if (data?.price) craft.value.materials[i].cost = data.price;
+            } else {
+              const results = await searchMarketItems(m.name, region);
+              const match = results.find(r => r.name.toLowerCase() === m.name.toLowerCase()) || results[0];
+              if (match?.id) {
+                const data = await fetchMarketPrice(match.id, region);
+                if (data?.price) craft.value.materials[i].cost = data.price;
+              }
+            }
+            // Fetch sub-recipe if this material is craftable
+            if (m.hasRecipe) {
+              const subId = await findRecipeIdByName(m.name);
+              if (subId) {
+                const subRecipe = await fetchRecipe(subId);
+                if (subRecipe?.materials?.length) {
+                  const subs = await Promise.all(subRecipe.materials.map(async (sm) => {
+                    let price = null;
+                    if (sm.itemId) {
+                      const d = await fetchMarketPrice(sm.itemId, region);
+                      price = d?.price || null;
+                    }
+                    if (!price) {
+                      const sr = await searchMarketItems(sm.name, region);
+                      const smatch = sr.find(r => r.name.toLowerCase() === sm.name.toLowerCase()) || sr[0];
+                      if (smatch?.id) { const d = await fetchMarketPrice(smatch.id, region); price = d?.price || null; }
+                    }
+                    return { name: sm.name, qty: sm.qty || 1, cost: price, gathered: false };
+                  }));
+                  craft.value.materials[i].subMaterials = subs;
+                }
+              }
             }
           } catch { /* skip */ }
         }));
@@ -253,7 +281,9 @@ const selectMatItem = async (i, item) => {
   s.priceLoading = false;
 };
 
-const addMaterial = () => craft.value.materials.push({ name: '', cost: null, qty: 1 });
+const addMaterial = () => craft.value.materials.push({ name: '', cost: null, qty: 1, gathered: false, hasRecipe: false, subMaterials: [], showSubs: false, itemId: null });
+const toggleGathered = (m) => { m.gathered = !m.gathered; };
+const toggleSubGathered = (sub) => { sub.gathered = !sub.gathered; };
 const removeMaterial = (i) => {
   craft.value.materials.splice(i, 1);
   delete matSearchStates.value[i];
@@ -268,7 +298,15 @@ const removeMaterial = (i) => {
 };
 
 const craftTotalMaterialCost = computed(() =>
-  craft.value.materials.reduce((sum, m) => sum + (m.cost || 0) * (m.qty || 1), 0)
+  craft.value.materials.reduce((sum, m) => {
+    if (m.gathered) return sum;
+    // If has sub-materials and expanded, use sub-material costs instead
+    if (m.showSubs && m.subMaterials.length) {
+      const subCost = m.subMaterials.reduce((s, sm) => s + (sm.gathered ? 0 : (sm.cost || 0) * (sm.qty || 1)), 0);
+      return sum + subCost * (m.qty || 1);
+    }
+    return sum + (m.cost || 0) * (m.qty || 1);
+  }, 0)
 );
 const craftTaxRate = computed(() => craft.value.hasValuePack ? 0.155 : 0.35);
 const craftRevenuePerItem = computed(() =>
@@ -771,6 +809,26 @@ const proc = ref({
   inputs: [{ name: '', cost: null, qty: 1 }],
   outputs: [{ name: '', sellPrice: null, qty: 1 }],
   batchesPerSession: 1,
+  masteryLevel: 0,
+});
+
+// Processing mastery → bonus yield (approximate, based on BDO mastery brackets)
+const PROC_MASTERY_YIELD = [
+  [0, 1.0], [50, 1.05], [100, 1.10], [150, 1.15], [200, 1.20], [250, 1.28],
+  [300, 1.35], [350, 1.43], [400, 1.50], [450, 1.58], [500, 1.68],
+  [550, 1.78], [600, 1.90], [650, 2.00], [700, 2.13], [750, 2.25],
+  [800, 2.40], [850, 2.55], [900, 2.70], [950, 2.85], [1000, 3.00],
+  [1100, 3.20], [1200, 3.40], [1300, 3.60], [1400, 3.80], [1500, 4.00],
+  [1600, 4.15], [1700, 4.30], [1800, 4.45], [1900, 4.55], [2000, 4.65],
+];
+const procMasteryYield = computed(() => {
+  const m = proc.value.masteryLevel || 0;
+  let mult = 1.0;
+  for (const [threshold, val] of PROC_MASTERY_YIELD) {
+    if (m >= threshold) mult = val;
+    else break;
+  }
+  return mult;
 });
 const procRegion = ref('na');
 
@@ -825,15 +883,17 @@ const procTaxRate = computed(() => proc.value.hasValuePack ? 0.155 : 0.35);
 const procTotalInputCost = computed(() =>
   proc.value.inputs.reduce((sum, m) => sum + (m.cost || 0) * (m.qty || 1), 0)
 );
-const procTotalOutputRevenue = computed(() =>
-  proc.value.outputs.reduce((sum, o) => {
+const procTotalOutputRevenue = computed(() => {
+  const yieldMult = procMasteryYield.value;
+  return proc.value.outputs.reduce((sum, o) => {
     const price = o.sellPrice || 0;
-    return sum + Math.floor(price * (1 - procTaxRate.value)) * (o.qty || 1);
-  }, 0)
-);
-const procTotalOutputRaw = computed(() =>
-  proc.value.outputs.reduce((sum, o) => sum + (o.sellPrice || 0) * (o.qty || 1), 0)
-);
+    return sum + Math.floor(price * (1 - procTaxRate.value) * (o.qty || 1) * yieldMult);
+  }, 0);
+});
+const procTotalOutputRaw = computed(() => {
+  const yieldMult = procMasteryYield.value;
+  return proc.value.outputs.reduce((sum, o) => sum + Math.floor((o.sellPrice || 0) * (o.qty || 1) * yieldMult), 0);
+});
 const procProfitPerBatch = computed(() => procTotalOutputRevenue.value - procTotalInputCost.value);
 const procProfitPerSession = computed(() => procProfitPerBatch.value * (proc.value.batchesPerSession || 1));
 const procROI = computed(() => {
@@ -992,6 +1052,10 @@ const silver = (n) => {
         <h3 class="sub-heading">Materials <span v-if="craftLoadingRecipe" class="recipe-spinner">loading recipe…</span></h3>
         <div v-for="(m, i) in craft.materials" :key="i" class="material-row-wrap">
           <div class="material-row">
+            <label class="gathered-check" :title="m.gathered ? 'Marked as gathered (free)' : 'Click if hand-gathered'">
+              <input type="checkbox" :checked="m.gathered" @change="toggleGathered(m)" />
+              <span class="gathered-icon">{{ m.gathered ? '🌿' : '' }}</span>
+            </label>
             <div class="mat-search-wrap">
               <input
                 :value="getMatSearch(i).query || m.name"
@@ -999,6 +1063,7 @@ const silver = (n) => {
                 @focus="getMatSearch(i).results.length && (getMatSearch(i).showDropdown = true)"
                 @blur="hideDropdown(getMatSearch(i))"
                 class="mat-name"
+                :class="{ 'mat-gathered': m.gathered }"
                 placeholder="Search material..."
               />
               <div v-if="getMatSearch(i).showDropdown && getMatSearch(i).results.length" class="recipe-dropdown mat-dropdown">
@@ -1008,11 +1073,26 @@ const silver = (n) => {
                 </div>
               </div>
             </div>
-            <input type="number" v-model.number="m.cost" class="mat-cost" placeholder="Cost each" />
+            <input type="number" v-model.number="m.cost" class="mat-cost" :class="{ 'mat-gathered': m.gathered }" :disabled="m.gathered" placeholder="Cost each" />
             <input type="number" v-model.number="m.qty" class="mat-qty" min="1" placeholder="Qty" />
+            <button v-if="m.hasRecipe && m.subMaterials.length" class="mat-expand" :class="{ active: m.showSubs }" @click="m.showSubs = !m.showSubs" title="Show sub-materials">▾</button>
             <button class="mat-remove" @click="removeMaterial(i)" v-if="craft.materials.length > 1">x</button>
           </div>
           <span v-if="getMatSearch(i).priceLoading" class="hint" style="margin-left: 4px;">fetching price…</span>
+          <!-- Sub-materials dropdown -->
+          <div v-if="m.showSubs && m.subMaterials.length" class="sub-materials">
+            <div class="sub-mat-header">Sub-materials for {{ m.name }}</div>
+            <div v-for="(sm, si) in m.subMaterials" :key="si" class="sub-material-row">
+              <label class="gathered-check" :title="sm.gathered ? 'Hand-gathered (free)' : 'Click if hand-gathered'">
+                <input type="checkbox" :checked="sm.gathered" @change="toggleSubGathered(sm)" />
+                <span class="gathered-icon">{{ sm.gathered ? '🌿' : '' }}</span>
+              </label>
+              <span class="sub-mat-name" :class="{ 'mat-gathered': sm.gathered }">{{ sm.name }}</span>
+              <input type="number" v-model.number="sm.cost" class="sub-mat-cost" :class="{ 'mat-gathered': sm.gathered }" :disabled="sm.gathered" placeholder="Cost" />
+              <span class="sub-mat-qty">x{{ sm.qty }}</span>
+              <span class="sub-mat-total">= {{ silver(sm.gathered ? 0 : (sm.cost || 0) * (sm.qty || 1)) }}</span>
+            </div>
+          </div>
         </div>
         <button class="btn-add-mat" @click="addMaterial">+ Add Material</button>
 
@@ -1339,6 +1419,17 @@ const silver = (n) => {
           </select>
         </div>
 
+        <div class="field-row">
+          <div class="field">
+            <label>Processing Mastery</label>
+            <input type="number" v-model.number="proc.masteryLevel" min="0" max="2000" placeholder="e.g. 800" />
+          </div>
+          <div class="field">
+            <label>Yield Multiplier</label>
+            <input type="text" :value="procMasteryYield.toFixed(2) + 'x'" disabled class="mastery-display" />
+          </div>
+        </div>
+
         <!-- Input materials -->
         <h3 class="sub-heading">Input Materials (buy/gather)</h3>
         <div v-for="(m, i) in proc.inputs" :key="'in'+i" class="material-row-wrap">
@@ -1405,8 +1496,12 @@ const silver = (n) => {
             <span>Total Input Cost</span>
             <span class="val">{{ silver(procTotalInputCost) }}</span>
           </div>
+          <div v-if="proc.masteryLevel > 0" class="result-row">
+            <span>Mastery Yield Bonus</span>
+            <span class="val" style="color:#f59e0b;">{{ procMasteryYield.toFixed(2) }}x output</span>
+          </div>
           <div class="result-row">
-            <span>Output Value (pre-tax)</span>
+            <span>Output Value (pre-tax{{ proc.masteryLevel > 0 ? ', with mastery' : '' }})</span>
             <span class="val">{{ silver(procTotalOutputRaw) }}</span>
           </div>
           <div class="result-row">
@@ -1719,6 +1814,37 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   border-radius: 6px; cursor: pointer; font-size: 0.8rem; margin-bottom: 16px;
 }
 .btn-add-mat:hover { border-color: #f59e0b; color: #f59e0b; }
+
+/* Gathered checkbox */
+.gathered-check { display: flex; align-items: center; cursor: pointer; flex-shrink: 0; width: 28px; }
+.gathered-check input[type="checkbox"] { accent-color: #4caf50; cursor: pointer; width: 16px; height: 16px; }
+.gathered-icon { font-size: 0.75rem; margin-left: 2px; }
+.mat-gathered { opacity: 0.45; text-decoration: line-through; }
+
+/* Expand sub-materials button */
+.mat-expand {
+  width: 28px; height: 28px; border: 1px solid #444; background: #1a1a1a; color: #aaa;
+  border-radius: 6px; cursor: pointer; font-size: 0.9rem; flex-shrink: 0; transition: transform 0.2s;
+}
+.mat-expand:hover { border-color: #f59e0b; color: #f59e0b; }
+.mat-expand.active { transform: rotate(180deg); color: #f59e0b; border-color: #f59e0b; }
+
+/* Sub-materials */
+.sub-materials {
+  margin: 4px 0 12px 36px; padding: 8px 12px; background: #111; border-left: 3px solid #f59e0b33;
+  border-radius: 0 8px 8px 0;
+}
+.sub-mat-header { font-size: 0.75rem; color: #888; margin-bottom: 6px; font-style: italic; }
+.sub-material-row { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
+.sub-mat-name { flex: 2; font-size: 0.82rem; color: #ddd; }
+.sub-mat-cost {
+  width: 90px; padding: 4px 8px; background: #1a1a1a; border: 1px solid #333;
+  border-radius: 4px; color: #fff; font-size: 0.8rem;
+}
+.sub-mat-cost:focus { outline: none; border-color: #f59e0b; }
+.sub-mat-qty { font-size: 0.8rem; color: #888; min-width: 30px; }
+.sub-mat-total { font-size: 0.8rem; color: #4caf50; min-width: 80px; text-align: right; }
+.mastery-display { background: #111 !important; color: #f59e0b !important; font-weight: 600; text-align: center; }
 
 .results-card {
   background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px;
