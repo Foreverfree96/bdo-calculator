@@ -58,12 +58,47 @@ const onMpItemSearch = () => {
   }
 };
 
+const mpSellPriceSource = ref('');
+const mpSellPriceStock = ref(0);
 const selectMpItem = async (item) => {
   mpItemQuery.value = item.name;
   mpItemShowDropdown.value = false;
   mpItemPriceLoading.value = true;
-  const price = await resolveItem(item, mpRegion.value);
-  if (price) mp.value.sellPrice = price;
+  mpSellPriceSource.value = '';
+  mpSellPriceStock.value = 0;
+  const region = mpRegion.value;
+  let priceSet = false;
+  // Try orders endpoint for cheapest listed price
+  const itemId = item.id;
+  if (itemId) {
+    const best = await fetchBestSellPrice(itemId, region);
+    if (best) {
+      mp.value.sellPrice = best.listPrice;
+      mpSellPriceSource.value = best.source;
+      mpSellPriceStock.value = best.stock;
+      priceSet = true;
+    }
+  }
+  if (!priceSet) {
+    try {
+      const results = await searchMarketItems(item.name, region);
+      const match = results.find(r => r.name.toLowerCase() === item.name.toLowerCase()) || results[0];
+      if (match?.id) {
+        const best = await fetchBestSellPrice(match.id, region);
+        if (best) {
+          mp.value.sellPrice = best.listPrice;
+          mpSellPriceSource.value = best.source;
+          mpSellPriceStock.value = best.stock;
+          priceSet = true;
+        }
+      }
+    } catch { /* continue */ }
+  }
+  if (!priceSet) {
+    const price = await resolveItem(item, region);
+    if (price) mp.value.sellPrice = price;
+    mpSellPriceSource.value = 'fallback';
+  }
   mpItemPriceLoading.value = false;
 };
 
@@ -1254,6 +1289,11 @@ const silver = (n) => {
           <div class="field">
             <label>Sell Price (per item) <span v-if="mpItemPriceLoading" class="hint">fetching…</span></label>
             <input type="number" v-model.number="mp.sellPrice" placeholder="e.g. 50000000" />
+            <div class="proc-price-info" v-if="mpSellPriceSource">
+              <span v-if="mpSellPriceSource === 'cheapest'" class="hint" style="color:#22c55e;">Lowest listed price ({{ mpSellPriceStock.toLocaleString() }} in stock)</span>
+              <span v-else-if="mpSellPriceSource === 'maxPrice'" class="hint" style="color:#f59e0b;">Max listing price (0 in stock)</span>
+              <span v-else-if="mpSellPriceSource === 'fallback'" class="hint" style="color:#6b7280;">Last sold / estimated</span>
+            </div>
           </div>
           <div class="field">
             <label>Quantity</label>
