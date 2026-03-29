@@ -10,9 +10,9 @@ import RecipeMaterial from './components/RecipeMaterial.vue';
 const tab = ref('marketplace');
 const recipeIndexReady = ref(false);
 
-// Pre-load recipe index when Recipes tab is first opened
+// Pre-load recipe index when Recipes or Crafting tab is opened
 watch(tab, (v) => {
-  if (v === 'recipes' && !recipeIndexReady.value) {
+  if ((v === 'recipes' || v === 'crafting') && !recipeIndexReady.value) {
     preloadRecipeIndex().then(() => { recipeIndexReady.value = true; });
   }
 });
