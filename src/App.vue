@@ -1,9 +1,10 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
 import { searchRecipes, fetchRecipe, findRecipeIdByName, preloadRecipeIndex } from './utils/recipes.js';
-import { fetchMarketPrice, fetchMarketPrices } from './utils/arsha.js';
+import { fetchMarketPrice, fetchMarketPrices, searchMarketItems } from './utils/arsha.js';
 import { getMasteryBonus, getBoxSellPrice, getBoxLimit, BOX_TIERS } from './utils/imperial.js';
-import { TRADING_LEVELS, getBargainBonus, getCrateSellPrice } from './utils/trading.js';
+import { TRADING_LEVELS, ALL_TRADE_ITEMS, PICKUP_LOCATIONS, SELL_LOCATIONS, DISTANCE_BONUS, getBargainBonus, getCrateSellPrice } from './utils/trading.js';
+import { searchLocalItems } from './utils/items.js';
 import RecipeMaterial from './components/RecipeMaterial.vue';
 
 const tab = ref('marketplace');
@@ -23,6 +24,56 @@ const mp = ref({
   hasValuePack: true,
 });
 
+// Item search
+const mpItemQuery = ref('');
+const mpItemResults = ref([]);
+const mpItemSearching = ref(false);
+const mpItemShowDropdown = ref(false);
+const mpItemPriceLoading = ref(false);
+const mpRegion = ref('na');
+
+let mpSearchTimeout = null;
+const onMpItemSearch = () => {
+  clearTimeout(mpSearchTimeout);
+  if (!mpItemQuery.value || mpItemQuery.value.length < 1) {
+    mpItemResults.value = [];
+    mpItemShowDropdown.value = false;
+    return;
+  }
+  // Instant local results
+  const local = searchLocalItems(mpItemQuery.value).map(i => ({ name: i.name, id: null, cat: i.cat, local: true }));
+  mpItemResults.value = local;
+  mpItemShowDropdown.value = local.length > 0;
+  // Then API
+  if (mpItemQuery.value.length >= 2) {
+    mpSearchTimeout = setTimeout(async () => {
+      mpItemSearching.value = true;
+      const api = await searchMarketItems(mpItemQuery.value, mpRegion.value);
+      const localNames = new Set(local.map(l => l.name.toLowerCase()));
+      mpItemResults.value = [...local, ...api.filter(a => !localNames.has(a.name.toLowerCase()))];
+      mpItemShowDropdown.value = mpItemResults.value.length > 0;
+      mpItemSearching.value = false;
+    }, 400);
+  }
+};
+
+const selectMpItem = async (item) => {
+  mpItemQuery.value = item.name;
+  mpItemShowDropdown.value = false;
+  mpItemPriceLoading.value = true;
+  const price = await resolveItem(item, mpRegion.value);
+  if (price) mp.value.sellPrice = price;
+  mpItemPriceLoading.value = false;
+};
+
+const clearMpItem = () => {
+  mpItemQuery.value = '';
+  mpItemResults.value = [];
+  mpItemShowDropdown.value = false;
+  mp.value.sellPrice = null;
+};
+const hideMpDropdown = () => setTimeout(() => { mpItemShowDropdown.value = false; }, 150);
+
 const mpTaxRate = computed(() => mp.value.hasValuePack ? 0.155 : 0.35);
 const mpTaxLabel = computed(() => mp.value.hasValuePack ? '15.5%' : '35%');
 const mpRevenue = computed(() => {
@@ -36,6 +87,51 @@ const mpTaxAmount = computed(() => {
   return Math.floor(price * mpTaxRate.value) * qty;
 });
 
+// ─── ITEM SEARCH HELPER (reusable across tabs) ──────────────────────────────
+const itemSearchState = () => ({
+  query: '', results: [], searching: false, showDropdown: false, priceLoading: false, timeout: null,
+});
+
+const doItemSearch = (state, region) => {
+  clearTimeout(state.timeout);
+  if (!state.query || state.query.length < 1) { state.results = []; state.showDropdown = false; return; }
+  // Instant local results
+  const local = searchLocalItems(state.query).map(i => ({ name: i.name, id: null, cat: i.cat, local: true }));
+  state.results = local;
+  state.showDropdown = local.length > 0;
+  // Then fetch API results after delay
+  if (state.query.length >= 2) {
+    state.timeout = setTimeout(async () => {
+      state.searching = true;
+      const api = await searchMarketItems(state.query, region);
+      // Merge: local first, then API results not already shown
+      const localNames = new Set(local.map(l => l.name.toLowerCase()));
+      const merged = [...local, ...api.filter(a => !localNames.has(a.name.toLowerCase()))];
+      state.results = merged;
+      state.showDropdown = merged.length > 0;
+      state.searching = false;
+    }, 400);
+  }
+};
+
+const hideDropdown = (state) => setTimeout(() => { state.showDropdown = false; }, 150);
+
+// Resolve a local item (no ID) to its market ID + price
+const resolveItem = async (item, region) => {
+  if (item.id) {
+    const data = await fetchMarketPrice(item.id, region);
+    return data?.price || null;
+  }
+  // Local item — search API by exact name to get ID
+  const results = await searchMarketItems(item.name, region);
+  const match = results.find(r => r.name.toLowerCase() === item.name.toLowerCase()) || results[0];
+  if (match?.id) {
+    const data = await fetchMarketPrice(match.id, region);
+    return data?.price || null;
+  }
+  return null;
+};
+
 // ─── CRAFTING ROI CALCULATOR ─────────────────────────────────────────────────
 const craft = ref({
   sellPrice: null,
@@ -43,9 +139,51 @@ const craft = ref({
   materials: [{ name: '', cost: null, qty: 1 }],
   craftsPerSession: 1,
 });
+const craftRegion = ref('na');
+
+// Crafting finished item search
+const craftItemSearch = ref(itemSearchState());
+const onCraftItemSearch = () => doItemSearch(craftItemSearch.value, craftRegion.value);
+const selectCraftItem = async (item) => {
+  craftItemSearch.value.query = item.name;
+  craftItemSearch.value.showDropdown = false;
+  craftItemSearch.value.priceLoading = true;
+  const price = await resolveItem(item, craftRegion.value);
+  if (price) craft.value.sellPrice = price;
+  craftItemSearch.value.priceLoading = false;
+};
+
+// Material search — per-material search states
+const matSearchStates = ref({});
+const getMatSearch = (i) => {
+  if (!matSearchStates.value[i]) matSearchStates.value[i] = itemSearchState();
+  return matSearchStates.value[i];
+};
+const onMatSearch = (i) => doItemSearch(getMatSearch(i), craftRegion.value);
+const selectMatItem = async (i, item) => {
+  const s = getMatSearch(i);
+  s.query = item.name;
+  s.showDropdown = false;
+  craft.value.materials[i].name = item.name;
+  s.priceLoading = true;
+  const price = await resolveItem(item, craftRegion.value);
+  if (price) craft.value.materials[i].cost = price;
+  s.priceLoading = false;
+};
 
 const addMaterial = () => craft.value.materials.push({ name: '', cost: null, qty: 1 });
-const removeMaterial = (i) => craft.value.materials.splice(i, 1);
+const removeMaterial = (i) => {
+  craft.value.materials.splice(i, 1);
+  delete matSearchStates.value[i];
+  // Re-index
+  const updated = {};
+  Object.keys(matSearchStates.value).forEach(k => {
+    const ki = Number(k);
+    if (ki > i) updated[ki - 1] = matSearchStates.value[k];
+    else if (ki < i) updated[ki] = matSearchStates.value[k];
+  });
+  matSearchStates.value = updated;
+};
 
 const craftTotalMaterialCost = computed(() =>
   craft.value.materials.reduce((sum, m) => sum + (m.cost || 0) * (m.qty || 1), 0)
@@ -73,6 +211,31 @@ const enhance = ref({
   repairCost: null,
   attemptsToSimulate: 10,
 });
+const enhRegion = ref('na');
+
+// Enhancement base item search
+const enhBaseSearch = ref(itemSearchState());
+const onEnhBaseSearch = () => doItemSearch(enhBaseSearch.value, enhRegion.value);
+const selectEnhBase = async (item) => {
+  enhBaseSearch.value.query = item.name;
+  enhBaseSearch.value.showDropdown = false;
+  enhBaseSearch.value.priceLoading = true;
+  const price = await resolveItem(item, enhRegion.value);
+  if (price) enhance.value.baseItemCost = price;
+  enhBaseSearch.value.priceLoading = false;
+};
+
+// Enhancement target item search
+const enhTargetSearch = ref(itemSearchState());
+const onEnhTargetSearch = () => doItemSearch(enhTargetSearch.value, enhRegion.value);
+const selectEnhTarget = async (item) => {
+  enhTargetSearch.value.query = item.name;
+  enhTargetSearch.value.showDropdown = false;
+  enhTargetSearch.value.priceLoading = true;
+  const price = await resolveItem(item, enhRegion.value);
+  if (price) enhance.value.targetSellPrice = price;
+  enhTargetSearch.value.priceLoading = false;
+};
 
 const enhTaxRate = computed(() => enhance.value.hasValuePack ? 0.155 : 0.35);
 const enhSuccessDecimal = computed(() => (enhance.value.successRate || 0) / 100);
@@ -368,9 +531,146 @@ const showTradeFormula = ref(false);
 const trade = ref({
   basePrice: null,
   distanceBonus: 150,
-  levelIndex: 50, // default ~Artisan 1
+  levelIndex: 50,
   matCost: null,
   quantity: 1,
+  from: '',
+  to: '',
+});
+
+// Auto-update distance bonus when from/to change
+watch(() => [trade.value.from, trade.value.to], ([from, to]) => {
+  if (!from || !to) return;
+  const loc = PICKUP_LOCATIONS.find(l => l.name === from);
+  if (!loc) return;
+  const bonus = DISTANCE_BONUS[loc.region]?.[to];
+  if (bonus != null) trade.value.distanceBonus = bonus;
+}, { immediate: false });
+
+// Item search
+const crateQuery = ref('');
+const crateShowDropdown = ref(false);
+const crateFilteredList = computed(() => {
+  const q = crateQuery.value.trim().toLowerCase();
+  if (!q) return ALL_TRADE_ITEMS.slice(0, 50);
+  return ALL_TRADE_ITEMS.filter(c =>
+    c.name.toLowerCase().includes(q) ||
+    c.region.toLowerCase().includes(q) ||
+    (c.location || '').toLowerCase().includes(q)
+  );
+});
+
+const selectCrate = (crate) => {
+  crateQuery.value = crate.name;
+  trade.value.basePrice = crate.basePrice;
+  crateShowDropdown.value = false;
+  // Auto-set from location if item has one
+  if (crate.location && crate.location !== 'Crafted') {
+    trade.value.from = crate.location;
+  }
+};
+const clearCrate = () => {
+  crateQuery.value = '';
+  trade.value.basePrice = null;
+  crateShowDropdown.value = false;
+};
+const hideCrateDropdown = () => setTimeout(() => { crateShowDropdown.value = false; }, 150);
+
+// Saved trades (localStorage)
+const SAVED_TRADE_KEY = 'bdo-saved-trades';
+const loadSavedTrades = () => {
+  try { return JSON.parse(localStorage.getItem(SAVED_TRADE_KEY) || '[]'); } catch { return []; }
+};
+const savedTrades = ref(loadSavedTrades());
+const savedTradeName = ref('');
+const editingIndex = ref(-1); // -1 = not editing
+
+const persistSaves = () => localStorage.setItem(SAVED_TRADE_KEY, JSON.stringify(savedTrades.value));
+
+const saveTrade = () => {
+  const name = savedTradeName.value.trim();
+  if (!name) return;
+  const entry = {
+    name,
+    crateName: crateQuery.value,
+    basePrice: trade.value.basePrice,
+    matCost: trade.value.matCost,
+    distanceBonus: trade.value.distanceBonus,
+    levelIndex: trade.value.levelIndex,
+    quantity: trade.value.quantity,
+    from: trade.value.from,
+    to: trade.value.to,
+  };
+  if (editingIndex.value >= 0) {
+    savedTrades.value[editingIndex.value] = entry;
+    editingIndex.value = -1;
+  } else {
+    const existing = savedTrades.value.findIndex(s => s.name === name);
+    if (existing >= 0) savedTrades.value[existing] = entry;
+    else savedTrades.value.push(entry);
+  }
+  persistSaves();
+  savedTradeName.value = '';
+};
+
+const loadSavedTrade = (entry) => {
+  crateQuery.value = entry.crateName || '';
+  trade.value.basePrice = entry.basePrice;
+  trade.value.matCost = entry.matCost;
+  trade.value.distanceBonus = entry.distanceBonus;
+  trade.value.levelIndex = entry.levelIndex;
+  trade.value.quantity = entry.quantity;
+  trade.value.from = entry.from || '';
+  trade.value.to = entry.to || '';
+};
+
+const editSavedTrade = (i) => {
+  loadSavedTrade(savedTrades.value[i]);
+  savedTradeName.value = savedTrades.value[i].name;
+  editingIndex.value = i;
+};
+
+const cancelEdit = () => {
+  editingIndex.value = -1;
+  savedTradeName.value = '';
+};
+
+const deleteSavedTrade = (i) => {
+  selectedSetups.value.delete(i);
+  savedTrades.value.splice(i, 1);
+  // Re-index selected setups above deleted index
+  const updated = new Set();
+  for (const idx of selectedSetups.value) {
+    updated.add(idx > i ? idx - 1 : idx);
+  }
+  selectedSetups.value = updated;
+  persistSaves();
+};
+
+// Multi-select for combined calculation
+const selectedSetups = ref(new Set());
+
+const toggleSetupSelect = (i) => {
+  const s = new Set(selectedSetups.value);
+  if (s.has(i)) s.delete(i); else s.add(i);
+  selectedSetups.value = s;
+};
+
+const combinedStats = computed(() => {
+  if (selectedSetups.value.size === 0) return null;
+  let totalCost = 0, totalRevenue = 0, totalQuantity = 0;
+  for (const i of selectedSetups.value) {
+    const s = savedTrades.value[i];
+    if (!s) continue;
+    const sell = getCrateSellPrice(s.basePrice || 0, s.distanceBonus || 0, s.levelIndex || 0);
+    const qty = s.quantity || 1;
+    totalCost += (s.matCost || 0) * qty;
+    totalRevenue += sell * qty;
+    totalQuantity += qty;
+  }
+  const totalProfit = totalRevenue - totalCost;
+  const roi = totalCost > 0 ? ((totalProfit / totalCost) * 100).toFixed(1) : '0.0';
+  return { totalCost, totalRevenue, totalProfit, totalQuantity, roi, count: selectedSetups.value.size };
 });
 
 const tradeBargainPct = computed(() => getBargainBonus(trade.value.levelIndex));
@@ -381,6 +681,82 @@ const tradeTotalProfit = computed(() => tradeProfitPerCrate.value * (trade.value
 const tradeROI = computed(() => {
   if (!trade.value.matCost) return 0;
   return ((tradeProfitPerCrate.value / trade.value.matCost) * 100).toFixed(1);
+});
+
+// ─── PROCESSING ROI CALCULATOR ───────────────────────────────────────────────
+const proc = ref({
+  hasValuePack: true,
+  inputs: [{ name: '', cost: null, qty: 1 }],
+  outputs: [{ name: '', sellPrice: null, qty: 1 }],
+  batchesPerSession: 1,
+});
+const procRegion = ref('na');
+
+// Input material search states
+const procInputSearch = ref({});
+const getProcInputSearch = (i) => {
+  if (!procInputSearch.value[i]) procInputSearch.value[i] = itemSearchState();
+  return procInputSearch.value[i];
+};
+const onProcInputSearch = (i) => doItemSearch(getProcInputSearch(i), procRegion.value);
+const selectProcInput = async (i, item) => {
+  const s = getProcInputSearch(i);
+  s.query = item.name;
+  s.showDropdown = false;
+  proc.value.inputs[i].name = item.name;
+  s.priceLoading = true;
+  const price = await resolveItem(item, procRegion.value);
+  if (price) proc.value.inputs[i].cost = price;
+  s.priceLoading = false;
+};
+
+// Output product search states
+const procOutputSearch = ref({});
+const getProcOutputSearch = (i) => {
+  if (!procOutputSearch.value[i]) procOutputSearch.value[i] = itemSearchState();
+  return procOutputSearch.value[i];
+};
+const onProcOutputSearch = (i) => doItemSearch(getProcOutputSearch(i), procRegion.value);
+const selectProcOutput = async (i, item) => {
+  const s = getProcOutputSearch(i);
+  s.query = item.name;
+  s.showDropdown = false;
+  proc.value.outputs[i].name = item.name;
+  s.priceLoading = true;
+  const price = await resolveItem(item, procRegion.value);
+  if (price) proc.value.outputs[i].sellPrice = price;
+  s.priceLoading = false;
+};
+
+const addProcInput = () => proc.value.inputs.push({ name: '', cost: null, qty: 1 });
+const removeProcInput = (i) => {
+  proc.value.inputs.splice(i, 1);
+  delete procInputSearch.value[i];
+};
+const addProcOutput = () => proc.value.outputs.push({ name: '', sellPrice: null, qty: 1 });
+const removeProcOutput = (i) => {
+  proc.value.outputs.splice(i, 1);
+  delete procOutputSearch.value[i];
+};
+
+const procTaxRate = computed(() => proc.value.hasValuePack ? 0.155 : 0.35);
+const procTotalInputCost = computed(() =>
+  proc.value.inputs.reduce((sum, m) => sum + (m.cost || 0) * (m.qty || 1), 0)
+);
+const procTotalOutputRevenue = computed(() =>
+  proc.value.outputs.reduce((sum, o) => {
+    const price = o.sellPrice || 0;
+    return sum + Math.floor(price * (1 - procTaxRate.value)) * (o.qty || 1);
+  }, 0)
+);
+const procTotalOutputRaw = computed(() =>
+  proc.value.outputs.reduce((sum, o) => sum + (o.sellPrice || 0) * (o.qty || 1), 0)
+);
+const procProfitPerBatch = computed(() => procTotalOutputRevenue.value - procTotalInputCost.value);
+const procProfitPerSession = computed(() => procProfitPerBatch.value * (proc.value.batchesPerSession || 1));
+const procROI = computed(() => {
+  if (!procTotalInputCost.value) return 0;
+  return ((procProfitPerBatch.value / procTotalInputCost.value) * 100).toFixed(1);
 });
 
 // ─── FORMATTING ──────────────────────────────────────────────────────────────
@@ -407,6 +783,7 @@ const silver = (n) => {
       <button :class="['tab', { active: tab === 'crafting' }]" @click="tab = 'crafting'">Crafting</button>
       <button :class="['tab', { active: tab === 'enhancement' }]" @click="tab = 'enhancement'">Enhancement</button>
       <button :class="['tab', { active: tab === 'recipes' }]" @click="tab = 'recipes'">Recipes</button>
+      <button :class="['tab', { active: tab === 'processing' }]" @click="tab = 'processing'">Processing</button>
       <button :class="['tab', { active: tab === 'imperial' }]" @click="tab = 'imperial'">Imperial</button>
       <button :class="['tab', { active: tab === 'trading' }]" @click="tab = 'trading'">Trading</button>
     </nav>
@@ -417,14 +794,47 @@ const silver = (n) => {
       <section v-if="tab === 'marketplace'" class="calc-section">
         <h2>Marketplace Tax Calculator</h2>
 
-        <label class="toggle-row">
-          <input type="checkbox" v-model="mp.hasValuePack" />
-          <span>Value Pack active <span class="hint">({{ mp.hasValuePack ? '15.5%' : '35%' }} tax)</span></span>
-        </label>
+        <div class="recipe-controls" style="margin-bottom: 12px;">
+          <label class="toggle-row" style="margin-bottom:0; flex:1;">
+            <input type="checkbox" v-model="mp.hasValuePack" />
+            <span>Value Pack active <span class="hint">({{ mp.hasValuePack ? '15.5%' : '35%' }} tax)</span></span>
+          </label>
+          <select v-model="mpRegion" class="region-select">
+            <option value="na">NA</option>
+            <option value="eu">EU</option>
+            <option value="sea">SEA</option>
+            <option value="sa">SA</option>
+          </select>
+        </div>
+
+        <!-- Item search -->
+        <div class="recipe-search-wrap" style="margin-bottom: 12px;">
+          <input
+            class="recipe-search"
+            v-model="mpItemQuery"
+            placeholder="Search any item (e.g. Black Stone, Dim Tree)..."
+            @input="onMpItemSearch"
+            @blur="hideMpDropdown"
+            @focus="mpItemResults.length && (mpItemShowDropdown = true)"
+          />
+          <span v-if="mpItemSearching" class="recipe-spinner">searching…</span>
+          <span v-else-if="mpItemPriceLoading" class="recipe-spinner">loading…</span>
+          <button v-else-if="mpItemQuery" class="recipe-clear" @click="clearMpItem">clear</button>
+          <div v-if="mpItemShowDropdown && mpItemResults.length" class="recipe-dropdown">
+            <div
+              v-for="item in mpItemResults.slice(0, 30)" :key="item.id"
+              class="recipe-dropdown-item"
+              @mousedown.prevent="selectMpItem(item)"
+            >
+              <span class="recipe-dropdown-name">{{ item.name }}</span>
+              <span class="hint">{{ item.cat || ('ID ' + item.id) }}</span><span v-if="item.priceHint" class="price-hint">~{{ item.priceHint }}</span>
+            </div>
+          </div>
+        </div>
 
         <div class="field-row">
           <div class="field">
-            <label>Sell Price (per item)</label>
+            <label>Sell Price (per item) <span v-if="mpItemPriceLoading" class="hint">fetching…</span></label>
             <input type="number" v-model.number="mp.sellPrice" placeholder="e.g. 50000000" />
           </div>
           <div class="field">
@@ -453,14 +863,42 @@ const silver = (n) => {
       <section v-if="tab === 'crafting'" class="calc-section">
         <h2>Crafting ROI Calculator</h2>
 
-        <label class="toggle-row">
-          <input type="checkbox" v-model="craft.hasValuePack" />
-          <span>Value Pack active <span class="hint">({{ craft.hasValuePack ? '15.5%' : '35%' }} tax)</span></span>
-        </label>
+        <div class="recipe-controls" style="margin-bottom: 12px;">
+          <label class="toggle-row" style="margin-bottom:0; flex:1;">
+            <input type="checkbox" v-model="craft.hasValuePack" />
+            <span>Value Pack active <span class="hint">({{ craft.hasValuePack ? '15.5%' : '35%' }} tax)</span></span>
+          </label>
+          <select v-model="craftRegion" class="region-select">
+            <option value="na">NA</option>
+            <option value="eu">EU</option>
+            <option value="sea">SEA</option>
+            <option value="sa">SA</option>
+          </select>
+        </div>
+
+        <!-- Finished item search -->
+        <div class="recipe-search-wrap" style="margin-bottom: 8px;">
+          <input
+            class="recipe-search" style="font-size: 0.9rem; padding: 10px 12px;"
+            v-model="craftItemSearch.query"
+            placeholder="Search finished item to sell..."
+            @input="onCraftItemSearch"
+            @blur="hideDropdown(craftItemSearch)"
+            @focus="craftItemSearch.results.length && (craftItemSearch.showDropdown = true)"
+          />
+          <span v-if="craftItemSearch.searching" class="recipe-spinner">searching…</span>
+          <span v-else-if="craftItemSearch.priceLoading" class="recipe-spinner">loading…</span>
+          <div v-if="craftItemSearch.showDropdown && craftItemSearch.results.length" class="recipe-dropdown">
+            <div v-for="item in craftItemSearch.results.slice(0, 20)" :key="item.id" class="recipe-dropdown-item" @mousedown.prevent="selectCraftItem(item)">
+              <span class="recipe-dropdown-name">{{ item.name }}</span>
+              <span class="hint">{{ item.cat || ('ID ' + item.id) }}</span><span v-if="item.priceHint" class="price-hint">~{{ item.priceHint }}</span>
+            </div>
+          </div>
+        </div>
 
         <div class="field-row">
           <div class="field">
-            <label>Sell Price (finished item)</label>
+            <label>Sell Price (finished item) <span v-if="craftItemSearch.priceLoading" class="hint">fetching…</span></label>
             <input type="number" v-model.number="craft.sellPrice" placeholder="e.g. 100000000" />
           </div>
           <div class="field">
@@ -470,11 +908,29 @@ const silver = (n) => {
         </div>
 
         <h3 class="sub-heading">Materials</h3>
-        <div v-for="(m, i) in craft.materials" :key="i" class="material-row">
-          <input v-model="m.name" class="mat-name" placeholder="Material name" />
-          <input type="number" v-model.number="m.cost" class="mat-cost" placeholder="Cost each" />
-          <input type="number" v-model.number="m.qty" class="mat-qty" min="1" placeholder="Qty" />
-          <button class="mat-remove" @click="removeMaterial(i)" v-if="craft.materials.length > 1">x</button>
+        <div v-for="(m, i) in craft.materials" :key="i" class="material-row-wrap">
+          <div class="material-row">
+            <div class="mat-search-wrap">
+              <input
+                :value="getMatSearch(i).query || m.name"
+                @input="e => { getMatSearch(i).query = e.target.value; m.name = e.target.value; onMatSearch(i); }"
+                @focus="getMatSearch(i).results.length && (getMatSearch(i).showDropdown = true)"
+                @blur="hideDropdown(getMatSearch(i))"
+                class="mat-name"
+                placeholder="Search material..."
+              />
+              <div v-if="getMatSearch(i).showDropdown && getMatSearch(i).results.length" class="recipe-dropdown mat-dropdown">
+                <div v-for="item in getMatSearch(i).results.slice(0, 15)" :key="item.id" class="recipe-dropdown-item" @mousedown.prevent="selectMatItem(i, item)">
+                  <span class="recipe-dropdown-name">{{ item.name }}</span>
+                  <span class="hint">{{ item.cat || ('ID ' + item.id) }}</span><span v-if="item.priceHint" class="price-hint">~{{ item.priceHint }}</span>
+                </div>
+              </div>
+            </div>
+            <input type="number" v-model.number="m.cost" class="mat-cost" placeholder="Cost each" />
+            <input type="number" v-model.number="m.qty" class="mat-qty" min="1" placeholder="Qty" />
+            <button class="mat-remove" @click="removeMaterial(i)" v-if="craft.materials.length > 1">x</button>
+          </div>
+          <span v-if="getMatSearch(i).priceLoading" class="hint" style="margin-left: 4px;">fetching price…</span>
         </div>
         <button class="btn-add-mat" @click="addMaterial">+ Add Material</button>
 
@@ -506,18 +962,66 @@ const silver = (n) => {
       <section v-if="tab === 'enhancement'" class="calc-section">
         <h2>Enhancement ROI Calculator</h2>
 
-        <label class="toggle-row">
-          <input type="checkbox" v-model="enhance.hasValuePack" />
-          <span>Value Pack active <span class="hint">({{ enhance.hasValuePack ? '15.5%' : '35%' }} tax)</span></span>
-        </label>
+        <div class="recipe-controls" style="margin-bottom: 12px;">
+          <label class="toggle-row" style="margin-bottom:0; flex:1;">
+            <input type="checkbox" v-model="enhance.hasValuePack" />
+            <span>Value Pack active <span class="hint">({{ enhance.hasValuePack ? '15.5%' : '35%' }} tax)</span></span>
+          </label>
+          <select v-model="enhRegion" class="region-select">
+            <option value="na">NA</option>
+            <option value="eu">EU</option>
+            <option value="sea">SEA</option>
+            <option value="sa">SA</option>
+          </select>
+        </div>
+
+        <!-- Base item search -->
+        <div class="recipe-search-wrap" style="margin-bottom: 8px;">
+          <input
+            class="recipe-search" style="font-size: 0.9rem; padding: 10px 12px;"
+            v-model="enhBaseSearch.query"
+            placeholder="Search base item (e.g. Dim Tree Spirit's Armor)..."
+            @input="onEnhBaseSearch"
+            @blur="hideDropdown(enhBaseSearch)"
+            @focus="enhBaseSearch.results.length && (enhBaseSearch.showDropdown = true)"
+          />
+          <span v-if="enhBaseSearch.searching" class="recipe-spinner">searching…</span>
+          <span v-else-if="enhBaseSearch.priceLoading" class="recipe-spinner">loading…</span>
+          <div v-if="enhBaseSearch.showDropdown && enhBaseSearch.results.length" class="recipe-dropdown">
+            <div v-for="item in enhBaseSearch.results.slice(0, 20)" :key="item.id" class="recipe-dropdown-item" @mousedown.prevent="selectEnhBase(item)">
+              <span class="recipe-dropdown-name">{{ item.name }}</span>
+              <span class="hint">{{ item.cat || ('ID ' + item.id) }}</span><span v-if="item.priceHint" class="price-hint">~{{ item.priceHint }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Target item search -->
+        <div class="recipe-search-wrap" style="margin-bottom: 8px;">
+          <input
+            class="recipe-search" style="font-size: 0.9rem; padding: 10px 12px;"
+            v-model="enhTargetSearch.query"
+            placeholder="Search enhanced result (e.g. PEN Dim Tree)..."
+            @input="onEnhTargetSearch"
+            @blur="hideDropdown(enhTargetSearch)"
+            @focus="enhTargetSearch.results.length && (enhTargetSearch.showDropdown = true)"
+          />
+          <span v-if="enhTargetSearch.searching" class="recipe-spinner">searching…</span>
+          <span v-else-if="enhTargetSearch.priceLoading" class="recipe-spinner">loading…</span>
+          <div v-if="enhTargetSearch.showDropdown && enhTargetSearch.results.length" class="recipe-dropdown">
+            <div v-for="item in enhTargetSearch.results.slice(0, 20)" :key="item.id" class="recipe-dropdown-item" @mousedown.prevent="selectEnhTarget(item)">
+              <span class="recipe-dropdown-name">{{ item.name }}</span>
+              <span class="hint">{{ item.cat || ('ID ' + item.id) }}</span><span v-if="item.priceHint" class="price-hint">~{{ item.priceHint }}</span>
+            </div>
+          </div>
+        </div>
 
         <div class="field-row">
           <div class="field">
-            <label>Base Item Cost</label>
+            <label>Base Item Cost <span v-if="enhBaseSearch.priceLoading" class="hint">fetching…</span></label>
             <input type="number" v-model.number="enhance.baseItemCost" placeholder="Cost of item to enhance" />
           </div>
           <div class="field">
-            <label>Target Sell Price</label>
+            <label>Target Sell Price <span v-if="enhTargetSearch.priceLoading" class="hint">fetching…</span></label>
             <input type="number" v-model.number="enhance.targetSellPrice" placeholder="MP price after success" />
           </div>
         </div>
@@ -736,6 +1240,112 @@ const silver = (n) => {
         </div>
       </section>
 
+      <!-- ═══ PROCESSING ROI ═══ -->
+      <section v-if="tab === 'processing'" class="calc-section">
+        <h2>Processing ROI Calculator</h2>
+
+        <div class="recipe-controls" style="margin-bottom: 12px;">
+          <label class="toggle-row" style="margin-bottom:0; flex:1;">
+            <input type="checkbox" v-model="proc.hasValuePack" />
+            <span>Value Pack active <span class="hint">({{ proc.hasValuePack ? '15.5%' : '35%' }} tax on output sales)</span></span>
+          </label>
+          <select v-model="procRegion" class="region-select">
+            <option value="na">NA</option>
+            <option value="eu">EU</option>
+            <option value="sea">SEA</option>
+            <option value="sa">SA</option>
+          </select>
+        </div>
+
+        <!-- Input materials -->
+        <h3 class="sub-heading">Input Materials (buy/gather)</h3>
+        <div v-for="(m, i) in proc.inputs" :key="'in'+i" class="material-row-wrap">
+          <div class="material-row">
+            <div class="mat-search-wrap">
+              <input
+                :value="getProcInputSearch(i).query || m.name"
+                @input="e => { getProcInputSearch(i).query = e.target.value; m.name = e.target.value; onProcInputSearch(i); }"
+                @focus="getProcInputSearch(i).results.length && (getProcInputSearch(i).showDropdown = true)"
+                @blur="hideDropdown(getProcInputSearch(i))"
+                class="mat-name"
+                placeholder="Search material..."
+              />
+              <div v-if="getProcInputSearch(i).showDropdown && getProcInputSearch(i).results.length" class="recipe-dropdown mat-dropdown">
+                <div v-for="item in getProcInputSearch(i).results.slice(0, 15)" :key="item.id" class="recipe-dropdown-item" @mousedown.prevent="selectProcInput(i, item)">
+                  <span class="recipe-dropdown-name">{{ item.name }}</span>
+                  <span class="hint">{{ item.cat || ('ID ' + item.id) }}</span><span v-if="item.priceHint" class="price-hint">~{{ item.priceHint }}</span>
+                </div>
+              </div>
+            </div>
+            <input type="number" v-model.number="m.cost" class="mat-cost" placeholder="Cost each" />
+            <input type="number" v-model.number="m.qty" class="mat-qty" min="1" placeholder="Qty" />
+            <button class="mat-remove" @click="removeProcInput(i)" v-if="proc.inputs.length > 1">x</button>
+          </div>
+          <span v-if="getProcInputSearch(i).priceLoading" class="hint" style="margin-left: 4px;">fetching price…</span>
+        </div>
+        <button class="btn-add-mat" @click="addProcInput">+ Add Input</button>
+
+        <!-- Output products -->
+        <h3 class="sub-heading">Output Products (sell on MP)</h3>
+        <div v-for="(o, i) in proc.outputs" :key="'out'+i" class="material-row-wrap">
+          <div class="material-row">
+            <div class="mat-search-wrap">
+              <input
+                :value="getProcOutputSearch(i).query || o.name"
+                @input="e => { getProcOutputSearch(i).query = e.target.value; o.name = e.target.value; onProcOutputSearch(i); }"
+                @focus="getProcOutputSearch(i).results.length && (getProcOutputSearch(i).showDropdown = true)"
+                @blur="hideDropdown(getProcOutputSearch(i))"
+                class="mat-name"
+                placeholder="Search product..."
+              />
+              <div v-if="getProcOutputSearch(i).showDropdown && getProcOutputSearch(i).results.length" class="recipe-dropdown mat-dropdown">
+                <div v-for="item in getProcOutputSearch(i).results.slice(0, 15)" :key="item.id" class="recipe-dropdown-item" @mousedown.prevent="selectProcOutput(i, item)">
+                  <span class="recipe-dropdown-name">{{ item.name }}</span>
+                  <span class="hint">{{ item.cat || ('ID ' + item.id) }}</span><span v-if="item.priceHint" class="price-hint">~{{ item.priceHint }}</span>
+                </div>
+              </div>
+            </div>
+            <input type="number" v-model.number="o.sellPrice" class="mat-cost" placeholder="Sell price" />
+            <input type="number" v-model.number="o.qty" class="mat-qty" min="1" placeholder="Qty" />
+            <button class="mat-remove" @click="removeProcOutput(i)" v-if="proc.outputs.length > 1">x</button>
+          </div>
+          <span v-if="getProcOutputSearch(i).priceLoading" class="hint" style="margin-left: 4px;">fetching price…</span>
+        </div>
+        <button class="btn-add-mat" @click="addProcOutput">+ Add Output</button>
+
+        <div class="field" style="margin-top: 12px;">
+          <label>Batches per session</label>
+          <input type="number" v-model.number="proc.batchesPerSession" min="1" placeholder="1" style="padding: 10px 12px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; color: #fff; font-size: 0.95rem; width: 120px;" />
+        </div>
+
+        <div class="results-card" style="margin-top: 16px;">
+          <div class="result-row">
+            <span>Total Input Cost</span>
+            <span class="val">{{ silver(procTotalInputCost) }}</span>
+          </div>
+          <div class="result-row">
+            <span>Output Value (pre-tax)</span>
+            <span class="val">{{ silver(procTotalOutputRaw) }}</span>
+          </div>
+          <div class="result-row">
+            <span>Output Revenue (after {{ proc.hasValuePack ? '15.5%' : '35%' }} tax)</span>
+            <span class="val">{{ silver(procTotalOutputRevenue) }}</span>
+          </div>
+          <div class="result-row" :class="procProfitPerBatch >= 0 ? '' : 'loss-row'">
+            <span>Profit Per Batch</span>
+            <span class="val" :class="procProfitPerBatch >= 0 ? 'profit' : 'loss'">{{ silver(procProfitPerBatch) }}</span>
+          </div>
+          <div class="result-row highlight" :class="procProfitPerSession >= 0 ? '' : 'loss-row'">
+            <span>Profit Per Session (x{{ proc.batchesPerSession || 1 }})</span>
+            <span class="val" :class="procProfitPerSession >= 0 ? 'profit' : 'loss'">{{ silver(procProfitPerSession) }}</span>
+          </div>
+          <div class="result-row">
+            <span>ROI</span>
+            <span class="val" :class="procROI >= 0 ? 'profit' : 'loss'">{{ procROI }}%</span>
+          </div>
+        </div>
+      </section>
+
       <!-- ═══ IMPERIAL COOKING ═══ -->
       <section v-if="tab === 'imperial'" class="calc-section">
         <h2>Imperial Cooking Delivery</h2>
@@ -806,26 +1416,67 @@ const silver = (n) => {
 
       <!-- ═══ CRATE TRADING ═══ -->
       <section v-if="tab === 'trading'" class="calc-section">
-        <h2>Crate Trading Calculator</h2>
+        <h2>Trade Calculator</h2>
         <p class="hint formula-toggle" style="margin-bottom: 12px;" @click="showTradeFormula = !showTradeFormula">
           {{ showTradeFormula ? '▼' : '▶' }} Formula
         </p>
         <p v-if="showTradeFormula" class="hint formula-box">Base Price x (1 + Distance%) x (1 + Bargain%)</p>
 
+        <!-- Item search -->
+        <div class="recipe-search-wrap" style="margin-bottom: 12px;">
+          <input
+            class="recipe-search"
+            v-model="crateQuery"
+            placeholder="Search trade item (e.g. Calpheon Timber, Yukjo, Valencia)..."
+            @focus="crateShowDropdown = true"
+            @input="crateShowDropdown = true"
+            @blur="hideCrateDropdown"
+          />
+          <button v-if="crateQuery" class="recipe-clear" @click="clearCrate">clear</button>
+          <div v-if="crateShowDropdown && crateFilteredList.length" class="recipe-dropdown">
+            <div
+              v-for="c in crateFilteredList" :key="c.name + c.location"
+              class="recipe-dropdown-item"
+              @mousedown.prevent="selectCrate(c)"
+            >
+              <span class="recipe-dropdown-name">{{ c.name }}</span>
+              <span class="hint">{{ c.location || c.region }} · {{ c.basePrice.toLocaleString() }}s</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- From / To locations -->
         <div class="field-row">
           <div class="field">
-            <label>Crate Base Price</label>
-            <input type="number" v-model.number="trade.basePrice" placeholder="e.g. 67296" />
+            <label>Pickup Location</label>
+            <select v-model="trade.from" class="region-select" style="width:100%;">
+              <option value="">— select —</option>
+              <option v-for="loc in PICKUP_LOCATIONS" :key="loc.name" :value="loc.name">{{ loc.name }} ({{ loc.region }})</option>
+            </select>
           </div>
           <div class="field">
-            <label>Material Cost Per Crate</label>
+            <label>Sell Location</label>
+            <select v-model="trade.to" class="region-select" style="width:100%;">
+              <option value="">— select —</option>
+              <option v-for="loc in SELL_LOCATIONS" :key="loc.name" :value="loc.name">{{ loc.name }} ({{ loc.region }})</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Base Price</label>
+            <input type="number" v-model.number="trade.basePrice" placeholder="e.g. 197280" />
+          </div>
+          <div class="field">
+            <label>Material Cost Per Unit</label>
             <input type="number" v-model.number="trade.matCost" placeholder="e.g. 30000" />
           </div>
         </div>
 
         <div class="field-row">
           <div class="field">
-            <label>Distance Bonus (%) <span class="hint">max 150</span></label>
+            <label>Distance Bonus (%) <span class="hint">max 150 · auto-fills from locations</span></label>
             <input type="number" v-model.number="trade.distanceBonus" min="0" max="150" step="1" placeholder="150" />
           </div>
           <div class="field">
@@ -840,6 +1491,10 @@ const silver = (n) => {
         </div>
 
         <div class="results-card" style="margin-top: 16px;">
+          <div v-if="trade.from || trade.to" class="result-row">
+            <span>Route</span>
+            <span class="val" style="color: #a78bfa;">{{ trade.from || '?' }} → {{ trade.to || '?' }}</span>
+          </div>
           <div class="result-row">
             <span>Distance Bonus</span>
             <span class="val" style="color: #60a5fa;">+{{ trade.distanceBonus || 0 }}%</span>
@@ -849,11 +1504,11 @@ const silver = (n) => {
             <span class="val" style="color: #60a5fa;">+{{ tradeBargainPct.toFixed(1) }}%</span>
           </div>
           <div class="result-row">
-            <span>Sell Price Per Crate</span>
+            <span>Sell Price Per Unit</span>
             <span class="val" style="color: #f59e0b;">{{ silver(tradeSellPrice) }}</span>
           </div>
           <div class="result-row" :class="tradeProfitPerCrate >= 0 ? '' : 'loss-row'">
-            <span>Profit Per Crate</span>
+            <span>Profit Per Unit</span>
             <span class="val" :class="tradeProfitPerCrate >= 0 ? 'profit' : 'loss'">{{ silver(tradeProfitPerCrate) }}</span>
           </div>
           <div class="result-row highlight" :class="tradeTotalProfit >= 0 ? '' : 'loss-row'">
@@ -863,6 +1518,53 @@ const silver = (n) => {
           <div class="result-row">
             <span>ROI</span>
             <span class="val" :class="tradeROI >= 0 ? 'profit' : 'loss'">{{ tradeROI }}%</span>
+          </div>
+        </div>
+
+        <!-- Save current setup -->
+        <div class="trade-save-row">
+          <input v-model="savedTradeName" class="trade-save-input" :placeholder="editingIndex >= 0 ? 'Editing: ' + savedTradeName : 'Save setup as...'" @keyup.enter="saveTrade" />
+          <button class="btn-save-trade" @click="saveTrade" :disabled="!savedTradeName.trim()">{{ editingIndex >= 0 ? 'Update' : 'Save' }}</button>
+          <button v-if="editingIndex >= 0" class="btn-cancel-edit" @click="cancelEdit">Cancel</button>
+        </div>
+
+        <!-- Saved trade setups -->
+        <div v-if="savedTrades.length" class="saved-trades">
+          <h3 class="sub-heading" style="margin-top: 8px;">Saved Setups <span class="hint" v-if="selectedSetups.size">({{ selectedSetups.size }} selected)</span></h3>
+          <div v-for="(s, i) in savedTrades" :key="i" class="saved-trade-item" :class="{ 'setup-selected': selectedSetups.has(i), 'setup-editing': editingIndex === i }">
+            <label class="setup-checkbox-wrap" @click.stop>
+              <input type="checkbox" :checked="selectedSetups.has(i)" @change="toggleSetupSelect(i)" />
+            </label>
+            <div class="saved-trade-info" style="flex:1; min-width:0;">
+              <span class="saved-trade-name">{{ s.name }}</span>
+              <span class="hint">{{ s.crateName || 'Custom' }} · {{ (s.basePrice || 0).toLocaleString() }}s · {{ s.from || '?' }} → {{ s.to || '?' }} · x{{ s.quantity || 1 }}</span>
+            </div>
+            <div class="saved-trade-actions">
+              <button class="btn-load-trade" @click="loadSavedTrade(s)">Load</button>
+              <button class="btn-load-trade" @click="editSavedTrade(i)" style="color: #f59e0b; border-color: #f59e0b;">Edit</button>
+              <button class="btn-del-trade" @click="deleteSavedTrade(i)">×</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Combined calculation for selected setups -->
+        <div v-if="combinedStats" class="results-card" style="margin-top: 16px;">
+          <h3 class="sub-heading" style="margin: 0 0 8px; color: #a78bfa;">Combined ({{ combinedStats.count }} setups · {{ combinedStats.totalQuantity }} units)</h3>
+          <div class="result-row">
+            <span>Total Material Cost</span>
+            <span class="val">{{ silver(combinedStats.totalCost) }}</span>
+          </div>
+          <div class="result-row">
+            <span>Total Revenue</span>
+            <span class="val" style="color: #f59e0b;">{{ silver(combinedStats.totalRevenue) }}</span>
+          </div>
+          <div class="result-row highlight" :class="combinedStats.totalProfit >= 0 ? '' : 'loss-row'">
+            <span>Total Profit</span>
+            <span class="val" :class="combinedStats.totalProfit >= 0 ? 'profit' : 'loss'">{{ silver(combinedStats.totalProfit) }}</span>
+          </div>
+          <div class="result-row">
+            <span>Combined ROI</span>
+            <span class="val" :class="combinedStats.totalProfit >= 0 ? 'profit' : 'loss'">{{ combinedStats.roi }}%</span>
           </div>
         </div>
       </section>
@@ -902,6 +1604,7 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   width: 18px; height: 18px; accent-color: #f59e0b; cursor: pointer;
 }
 .hint { color: #888; font-size: 0.8rem; }
+.price-hint { color: #4caf50; font-size: 0.75rem; margin-left: 6px; font-weight: 500; }
 
 .field-row { display: flex; gap: 12px; margin-bottom: 12px; }
 .field { flex: 1; display: flex; flex-direction: column; gap: 4px; }
@@ -921,6 +1624,9 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .mat-cost { flex: 1.5; padding: 8px 10px; background: #1a1a1a; border: 1px solid #333; border-radius: 6px; color: #fff; font-size: 0.85rem; }
 .mat-qty { flex: 0.7; padding: 8px 10px; background: #1a1a1a; border: 1px solid #333; border-radius: 6px; color: #fff; font-size: 0.85rem; text-align: center; }
 .mat-name:focus, .mat-cost:focus, .mat-qty:focus { outline: none; border-color: #f59e0b; }
+.material-row-wrap { margin-bottom: 8px; }
+.mat-search-wrap { position: relative; flex: 2; }
+.mat-dropdown { top: 100%; left: 0; right: 0; max-height: 200px; }
 .mat-remove {
   width: 28px; height: 28px; border: none; background: #7f1d1d; color: #fff;
   border-radius: 6px; cursor: pointer; font-size: 0.85rem; flex-shrink: 0;
@@ -997,6 +1703,56 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .recipe-dropdown-item:hover { background: #2a2a2a; }
 .recipe-dropdown-item:last-child { border-bottom: none; }
 .recipe-dropdown-name { color: #fff; font-weight: 600; font-size: 0.9rem; }
+
+/* ── Trade Save / Saved Setups ── */
+.trade-save-row {
+  display: flex; gap: 8px; margin-top: 16px;
+}
+.trade-save-input {
+  flex: 1; padding: 10px 12px; background: #1a1a1a; border: 1px solid #333;
+  border-radius: 8px; color: #fff; font-size: 0.9rem;
+}
+.trade-save-input:focus { outline: none; border-color: #f59e0b; }
+.btn-save-trade {
+  padding: 10px 18px; background: #f59e0b; border: none; border-radius: 8px;
+  color: #000; font-weight: 700; font-size: 0.85rem; cursor: pointer;
+}
+.btn-save-trade:disabled { opacity: 0.4; cursor: default; }
+.btn-save-trade:not(:disabled):hover { background: #fbbf24; }
+
+.saved-trades { margin-top: 4px; }
+.saved-trade-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px; background: #1a1a1a; border: 1px solid #2a2a2a;
+  border-radius: 8px; margin-bottom: 6px;
+}
+.saved-trade-info { display: flex; flex-direction: column; gap: 2px; }
+.saved-trade-name { font-weight: 600; font-size: 0.9rem; color: #fff; }
+.saved-trade-actions { display: flex; gap: 6px; }
+.btn-load-trade {
+  padding: 6px 14px; background: #2a2a2a; border: 1px solid #444;
+  border-radius: 6px; color: #fff; font-size: 0.8rem; cursor: pointer;
+}
+.btn-load-trade:hover { background: #333; border-color: #f59e0b; color: #f59e0b; }
+.btn-del-trade {
+  width: 28px; height: 28px; background: #7f1d1d; border: none;
+  border-radius: 6px; color: #fff; font-size: 1rem; cursor: pointer; line-height: 1;
+}
+.btn-del-trade:hover { background: #991b1b; }
+.btn-cancel-edit {
+  padding: 10px 14px; background: #333; border: 1px solid #555; border-radius: 8px;
+  color: #ccc; font-size: 0.85rem; cursor: pointer;
+}
+.btn-cancel-edit:hover { background: #444; }
+
+.setup-checkbox-wrap {
+  display: flex; align-items: center; cursor: pointer; flex-shrink: 0;
+}
+.setup-checkbox-wrap input[type="checkbox"] {
+  width: 16px; height: 16px; accent-color: #a78bfa; cursor: pointer;
+}
+.setup-selected { border-color: #a78bfa !important; background: #1a1528 !important; }
+.setup-editing { border-color: #f59e0b !important; }
 .recipe-dropdown-cat { color: #888; font-size: 0.75rem; text-transform: uppercase; }
 
 .recipe-error { color: #ef4444; font-size: 0.85rem; margin: 8px 0; }
