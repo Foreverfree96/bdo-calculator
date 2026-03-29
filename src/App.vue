@@ -183,13 +183,50 @@ const craftRegion = ref('na');
 // Crafting finished item search
 const craftItemSearch = ref(itemSearchState());
 const onCraftItemSearch = () => doItemSearch(craftItemSearch.value, craftRegion.value);
+const craftLoadingRecipe = ref(false);
 const selectCraftItem = async (item) => {
   craftItemSearch.value.query = item.name;
   craftItemSearch.value.showDropdown = false;
   craftItemSearch.value.priceLoading = true;
+  // Fetch sell price
   const price = await resolveItem(item, craftRegion.value);
   if (price) craft.value.sellPrice = price;
   craftItemSearch.value.priceLoading = false;
+  // Auto-load recipe materials
+  craftLoadingRecipe.value = true;
+  try {
+    const recipeId = await findRecipeIdByName(item.name);
+    if (recipeId) {
+      const recipe = await fetchRecipe(recipeId);
+      if (recipe?.materials?.length) {
+        // Reset materials and search states
+        matSearchStates.value = {};
+        craft.value.materials = recipe.materials.map(m => ({
+          name: m.name,
+          cost: null,
+          qty: m.qty || 1,
+        }));
+        // Set search state queries for each material
+        recipe.materials.forEach((m, i) => {
+          const s = getMatSearch(i);
+          s.query = m.name;
+        });
+        // Fetch live prices for all materials in parallel
+        const region = craftRegion.value;
+        await Promise.all(recipe.materials.map(async (m, i) => {
+          try {
+            const results = await searchMarketItems(m.name, region);
+            const match = results.find(r => r.name.toLowerCase() === m.name.toLowerCase()) || results[0];
+            if (match?.id) {
+              const data = await fetchMarketPrice(match.id, region);
+              if (data?.price) craft.value.materials[i].cost = data.price;
+            }
+          } catch { /* skip */ }
+        }));
+      }
+    }
+  } catch { /* recipe lookup failed, no big deal */ }
+  craftLoadingRecipe.value = false;
 };
 
 // Material search — per-material search states
@@ -946,7 +983,7 @@ const silver = (n) => {
           </div>
         </div>
 
-        <h3 class="sub-heading">Materials</h3>
+        <h3 class="sub-heading">Materials <span v-if="craftLoadingRecipe" class="recipe-spinner">loading recipe…</span></h3>
         <div v-for="(m, i) in craft.materials" :key="i" class="material-row-wrap">
           <div class="material-row">
             <div class="mat-search-wrap">
