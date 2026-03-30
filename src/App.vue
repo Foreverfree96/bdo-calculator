@@ -908,11 +908,11 @@ const saveTrade = () => {
     to: trade.value.to,
   };
   if (editingIndex.value >= 0) {
-    savedTrades.value[editingIndex.value] = entry;
+    savedTrades.value.splice(editingIndex.value, 1, entry);
     editingIndex.value = -1;
   } else {
-    const existing = savedTrades.value.findIndex(s => s.name === name);
-    if (existing >= 0) savedTrades.value[existing] = entry;
+    const existing = savedTrades.value.findIndex(s => s?.name === name);
+    if (existing >= 0) savedTrades.value.splice(existing, 1, entry);
     else savedTrades.value.push(entry);
   }
   persistSaves();
