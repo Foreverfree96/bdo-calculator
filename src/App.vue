@@ -844,6 +844,8 @@ const selectCrate = async (crate) => {
   if (crate.location && crate.location !== 'Crafted') {
     trade.value.from = crate.location;
   }
+  // Default sell location to Valencia City when selecting an item
+  trade.value.to = trade.value.to || 'Valencia City';
   // Auto-fill material cost for crafted crates
   if (crate.location === 'Crafted' || crate.region === 'Crate') {
     tradeLoadingMats.value = true;
