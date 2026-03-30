@@ -885,7 +885,7 @@ const hideCrateDropdown = () => setTimeout(() => { crateShowDropdown.value = fal
 // Saved trades (localStorage)
 const SAVED_TRADE_KEY = 'bdo-saved-trades';
 const loadSavedTrades = () => {
-  try { return JSON.parse(localStorage.getItem(SAVED_TRADE_KEY) || '[]'); } catch { return []; }
+  try { return (JSON.parse(localStorage.getItem(SAVED_TRADE_KEY) || '[]') || []).filter(Boolean); } catch { return []; }
 };
 const savedTrades = ref(loadSavedTrades());
 const savedTradeName = ref('');
@@ -2110,7 +2110,7 @@ const silver = (n) => {
         <!-- Saved trade setups -->
         <div v-if="savedTrades.length" class="saved-trades">
           <h3 class="sub-heading" style="margin-top: 8px;">Saved Setups <span class="hint" v-if="selectedSetups.size">({{ selectedSetups.size }} selected)</span></h3>
-          <div v-for="(s, i) in savedTrades" :key="i" class="saved-trade-item" :class="{ 'setup-selected': selectedSetups.has(i), 'setup-editing': editingIndex === i }">
+          <div v-for="(s, i) in savedTrades" :key="i" v-if="s" class="saved-trade-item" :class="{ 'setup-selected': selectedSetups.has(i), 'setup-editing': editingIndex === i }">
             <label class="setup-checkbox-wrap" @click.stop>
               <input type="checkbox" :checked="selectedSetups.has(i)" @change="toggleSetupSelect(i)" />
             </label>
