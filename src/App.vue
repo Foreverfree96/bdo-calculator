@@ -964,6 +964,15 @@ const toggleSetupSelect = (i) => {
   selectedSetups.value = s;
 };
 
+const toggleSelectAll = () => {
+  const valid = savedTrades.value.filter(Boolean);
+  if (selectedSetups.value.size === valid.length) {
+    selectedSetups.value = new Set();
+  } else {
+    selectedSetups.value = new Set(valid.map((_, i) => i));
+  }
+};
+
 const combinedStats = computed(() => {
   if (selectedSetups.value.size === 0) return null;
   let totalCost = 0, totalRevenue = 0, totalQuantity = 0;
@@ -2111,7 +2120,9 @@ const silver = (n) => {
 
         <!-- Saved trade setups -->
         <div v-if="savedTrades.length" class="saved-trades">
-          <h3 class="sub-heading" style="margin-top: 8px;">Saved Setups <span class="hint" v-if="selectedSetups.size">({{ selectedSetups.size }} selected)</span></h3>
+          <h3 class="sub-heading" style="margin-top: 8px;">Saved Setups <span class="hint" v-if="selectedSetups.size">({{ selectedSetups.size }} selected)</span>
+            <button class="btn-select-all" @click="toggleSelectAll">{{ selectedSetups.size === savedTrades.filter(Boolean).length ? 'Deselect All' : 'Select All' }}</button>
+          </h3>
           <div v-for="(s, i) in savedTrades.filter(Boolean)" :key="i" class="saved-trade-item" :class="{ 'setup-selected': selectedSetups.has(i), 'setup-editing': editingIndex === i }">
             <label class="setup-checkbox-wrap" @click.stop>
               <input type="checkbox" :checked="selectedSetups.has(i)" @change="toggleSetupSelect(i)" />
@@ -2352,6 +2363,8 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   border-radius: 6px; color: #fff; font-size: 1rem; cursor: pointer; line-height: 1;
 }
 .btn-del-trade:hover { background: #991b1b; }
+.btn-select-all { margin-left: 8px; padding: 2px 8px; font-size: 0.75rem; background: transparent; border: 1px solid #555; border-radius: 4px; color: #aaa; cursor: pointer; vertical-align: middle; }
+.btn-select-all:hover { border-color: #a78bfa; color: #a78bfa; }
 .btn-cancel-edit {
   padding: 10px 14px; background: #333; border: 1px solid #555; border-radius: 8px;
   color: #ccc; font-size: 0.85rem; cursor: pointer;
