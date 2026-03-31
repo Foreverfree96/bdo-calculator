@@ -227,7 +227,7 @@ const craftRegion = ref('na');
 watch(craftType, (type) => {
   const p = profileData?.value?.profiles?.find(pr => pr.id === profileData.value.activeId);
   if (p) {
-    craft.value.masteryLevel = Math.min(type === 'alchemy' ? (p.alchemyMastery || 0) : p.cookingMastery, 2000);
+    craft.value.masteryLevel = type === 'alchemy' ? (p.alchemyMastery || 0) : p.cookingMastery;
   }
 });
 
@@ -1270,8 +1270,7 @@ const activeProfile = computed(() =>
 );
 
 const applyProfile = (p) => {
-  const craftMastery = craftType.value === 'alchemy' ? (p.alchemyMastery || 0) : p.cookingMastery;
-  craft.value.masteryLevel = Math.min(craftMastery, 2000);
+  craft.value.masteryLevel = craftType.value === 'alchemy' ? (p.alchemyMastery || 0) : p.cookingMastery;
   proc.value.masteryLevel = Math.min(p.processingMastery, 2000);
   imp.value.mastery = p.cookingMastery;
   imp.value.cp = p.cp;
@@ -1556,7 +1555,7 @@ const silver = (n) => {
               </span>
               Mastery
             </label>
-            <input type="number" v-model.number="craft.masteryLevel" min="0" max="2000" placeholder="e.g. 800" />
+            <input type="number" v-model.number="craft.masteryLevel" min="0" max="3000" placeholder="e.g. 800" />
           </div>
           <div class="field">
             <label>Avg Items Per Craft</label>
