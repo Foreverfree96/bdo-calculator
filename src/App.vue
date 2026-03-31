@@ -42,7 +42,7 @@ const onMpItemSearch = () => {
     return;
   }
   // Instant local results
-  const local = searchLocalItems(mpItemQuery.value).map(i => ({ name: i.name, id: null, cat: i.cat, local: true }));
+  const local = searchLocalItems(mpItemQuery.value).map(i => ({ name: i.name, id: i.itemId || null, cat: i.cat, local: true }));
   mpItemResults.value = local;
   mpItemShowDropdown.value = local.length > 0;
   // Then API
@@ -132,7 +132,7 @@ const doItemSearch = (state, region) => {
   clearTimeout(state.timeout);
   if (!state.query || state.query.length < 1) { state.results = []; state.showDropdown = false; return; }
   // Instant local results with price hints
-  const local = searchLocalItems(state.query).map(i => ({ name: i.name, id: null, cat: i.cat, priceHint: i.priceHint, local: true }));
+  const local = searchLocalItems(state.query).map(i => ({ name: i.name, id: i.itemId || null, cat: i.cat, priceHint: i.priceHint, local: true }));
   state.results = local;
   state.showDropdown = local.length > 0;
   // Then fetch API results + live prices after delay
@@ -288,6 +288,7 @@ const selectCraftItem = async (item) => {
           subMaterials: [],
           showSubs: false,
           itemId: m.itemId || null,
+          priceSource: null,
         }));
         // Set search state queries for each material
         recipe.materials.forEach((m, i) => {
@@ -301,7 +302,7 @@ const selectCraftItem = async (item) => {
           if (itemId) {
             try {
               const data = await fetchMarketPrice(itemId, region);
-              if (data?.price) return data.price;
+              if (data?.price) return { price: data.price, source: 'market' };
             } catch { /* continue */ }
           }
           // 2. Try marketplace name search
@@ -310,18 +311,22 @@ const selectCraftItem = async (item) => {
             const match = results.find(r => r.name.toLowerCase() === name.toLowerCase()) || results[0];
             if (match?.id) {
               const data = await fetchMarketPrice(match.id, region);
-              if (data?.price) return data.price;
+              if (data?.price) return { price: data.price, source: 'market' };
             }
           } catch { /* continue */ }
-          // 3. Fallback to static price from COMMON_ITEMS
-          return getStaticPrice(name);
+          // 3. Fallback to static price from COMMON_ITEMS / fish vendor prices
+          const staticPrice = getStaticPrice(name);
+          return staticPrice ? { price: staticPrice, source: 'static' } : null;
         };
 
         // Fetch live prices + sub-recipes in parallel
         await Promise.all(recipe.materials.map(async (m, i) => {
           try {
-            const price = await fetchMatPrice(m.name, m.itemId);
-            if (price) craft.value.materials[i].cost = price;
+            const result = await fetchMatPrice(m.name, m.itemId);
+            if (result) {
+              craft.value.materials[i].cost = result.price;
+              craft.value.materials[i].priceSource = result.source;
+            }
             // Fetch sub-recipe if this material is craftable
             if (m.hasRecipe) {
               const subId = await findRecipeIdByName(m.name);
@@ -329,8 +334,8 @@ const selectCraftItem = async (item) => {
                 const subRecipe = await fetchRecipe(subId);
                 if (subRecipe?.materials?.length) {
                   const subs = await Promise.all(subRecipe.materials.map(async (sm) => {
-                    const subPrice = await fetchMatPrice(sm.name, sm.itemId);
-                    return { name: sm.name, qty: sm.qty || 1, cost: subPrice, gathered: false };
+                    const subResult = await fetchMatPrice(sm.name, sm.itemId);
+                    return { name: sm.name, qty: sm.qty || 1, cost: subResult?.price || null, priceSource: subResult?.source || null, gathered: false };
                   }));
                   craft.value.materials[i].subMaterials = subs;
                 }
@@ -1443,7 +1448,7 @@ const silver = (n) => {
             <div class="proc-price-info" v-if="mpSellPriceSource">
               <span v-if="mpSellPriceSource === 'cheapest'" class="hint" style="color:#22c55e;">Lowest listed price ({{ mpSellPriceStock.toLocaleString() }} in stock)</span>
               <span v-else-if="mpSellPriceSource === 'maxPrice'" class="hint" style="color:#f59e0b;">Max listing price (0 in stock)</span>
-              <span v-else-if="mpSellPriceSource === 'fallback'" class="hint" style="color:#6b7280;">Last sold / estimated</span>
+              <span v-else-if="mpSellPriceSource === 'fallback'" class="hint" style="color:#ef4444;">⚠ API unavailable — using static estimate, verify manually</span>
             </div>
           </div>
           <div class="field">
@@ -1512,7 +1517,7 @@ const silver = (n) => {
             <div class="proc-price-info" v-if="craftSellPriceSource">
               <span v-if="craftSellPriceSource === 'cheapest'" class="hint" style="color:#22c55e;">Lowest listed price ({{ craftSellPriceStock.toLocaleString() }} in stock)</span>
               <span v-else-if="craftSellPriceSource === 'maxPrice'" class="hint" style="color:#f59e0b;">Max listing price (0 in stock)</span>
-              <span v-else-if="craftSellPriceSource === 'fallback'" class="hint" style="color:#6b7280;">Last sold / estimated</span>
+              <span v-else-if="craftSellPriceSource === 'fallback'" class="hint" style="color:#ef4444;">⚠ API unavailable — using static estimate, verify manually</span>
             </div>
           </div>
           <div class="field">
@@ -1557,6 +1562,7 @@ const silver = (n) => {
               </div>
             </div>
             <input type="number" v-model.number="m.cost" class="mat-cost" :class="{ 'mat-gathered': m.gathered }" :disabled="m.gathered" placeholder="Cost each" />
+            <span v-if="m.priceSource === 'static' && !m.gathered" class="hint" style="color:#ef4444;font-size:0.65rem;" title="Price from static estimate — API was unavailable">est.</span>
             <input type="number" v-model.number="m.qty" class="mat-qty" min="1" placeholder="Qty" />
             <button v-if="m.hasRecipe && m.subMaterials.length" class="mat-expand" :class="{ active: m.showSubs }" @click="m.showSubs = !m.showSubs" title="Show sub-materials">▾</button>
             <button class="mat-remove" @click="removeMaterial(i)" v-if="craft.materials.length > 1">x</button>
@@ -1588,24 +1594,24 @@ const silver = (n) => {
             <span>Revenue Per Item (after tax)</span>
             <span class="val">{{ silver(craftRevenuePerItem) }}</span>
           </div>
-          <div v-if="craft.masteryLevel > 0" class="result-row">
+          <div class="result-row">
             <span>Mastery Yield</span>
-            <span class="val" style="color:#f59e0b;">{{ craftMasteryYield.toFixed(2) }} items/craft</span>
+            <span class="val" style="color:#f59e0b;">{{ craftMasteryYield.toFixed(2) }}× items/craft</span>
           </div>
           <div class="result-row">
-            <span>Revenue Per Craft{{ craft.masteryLevel > 0 ? ' (× ' + craftMasteryYield.toFixed(2) + ' items)' : '' }}</span>
+            <span>Revenue Per Craft <span class="hint">({{ silver(craftRevenuePerItem) }} × {{ craftMasteryYield.toFixed(2) }})</span></span>
             <span class="val">{{ silver(craftRevenuePerCraft) }}</span>
           </div>
           <div class="result-row" :class="craftProfitPerCraft >= 0 ? '' : 'loss-row'">
-            <span>Profit Per Craft</span>
+            <span>Profit Per Craft <span class="hint">({{ craftMasteryYield.toFixed(2) }}× yield)</span></span>
             <span class="val" :class="craftProfitPerCraft >= 0 ? 'profit' : 'loss'">{{ silver(craftProfitPerCraft) }}</span>
           </div>
           <div class="result-row highlight" :class="craftProfitPerSession >= 0 ? '' : 'loss-row'">
-            <span>Profit Per Session (x{{ craft.craftsPerSession || 1 }})</span>
+            <span>Profit Per Session (×{{ craft.craftsPerSession || 1 }})</span>
             <span class="val" :class="craftProfitPerSession >= 0 ? 'profit' : 'loss'">{{ silver(craftProfitPerSession) }}</span>
           </div>
           <div class="result-row">
-            <span>ROI</span>
+            <span>ROI <span class="hint">(includes {{ craftMasteryYield.toFixed(2) }}× yield)</span></span>
             <span class="val" :class="craftROI >= 0 ? 'profit' : 'loss'">{{ craftROI }}%</span>
           </div>
         </div>
