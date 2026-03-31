@@ -979,7 +979,7 @@ const combinedStats = computed(() => {
   for (const i of selectedSetups.value) {
     const s = savedTrades.value[i];
     if (!s) continue;
-    const sell = getCrateSellPrice(s.basePrice || 0, s.distanceBonus || 0, s.levelIndex || 0);
+    const sell = getCrateSellPrice(s.basePrice || 0, s.distanceBonus || 0, trade.value.levelIndex);
     const qty = s.quantity || 1;
     totalCost += (s.matCost || 0) * qty;
     totalRevenue += sell * qty;
@@ -2129,7 +2129,7 @@ const silver = (n) => {
             </label>
             <div class="saved-trade-info" style="flex:1; min-width:0;">
               <span class="saved-trade-name">{{ s.name }}</span>
-              <span class="hint">{{ s.crateName || 'Custom' }} · {{ (s.basePrice || 0).toLocaleString() }}s · {{ s.from || '?' }} → {{ s.to || '?' }} · x{{ s.quantity || 1 }}</span>
+              <span class="hint">{{ s.crateName || 'Custom' }} · {{ (s.basePrice || 0).toLocaleString() }}s · {{ s.from || '?' }} → {{ s.to || '?' }} · x{{ s.quantity || 1 }} · {{ TRADING_LEVELS[s.levelIndex]?.label || '?' }}</span>
             </div>
             <div class="saved-trade-actions">
               <button class="btn-load-trade" @click="loadSavedTrade(s)">Load</button>
