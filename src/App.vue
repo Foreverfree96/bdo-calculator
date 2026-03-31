@@ -402,8 +402,8 @@ const craftMasteryYield = computed(() => {
 const craftTotalMaterialCost = computed(() =>
   craft.value.materials.reduce((sum, m) => {
     if (m.gathered) return sum;
-    // If has sub-materials and expanded, use sub-material costs instead
-    if (m.showSubs && m.subMaterials.length) {
+    // If sub-materials exist, always use their costs (more accurate than parent market price)
+    if (m.subMaterials.length) {
       const subCost = m.subMaterials.reduce((s, sm) => s + (sm.gathered ? 0 : (sm.cost || 0) * (sm.qty || 1)), 0);
       return sum + subCost * (m.qty || 1);
     }
