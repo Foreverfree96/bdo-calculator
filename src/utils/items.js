@@ -1,3 +1,5 @@
+import { FISH_VENDOR_PRICES } from './processing.js';
+
 // Common BDO items for instant search suggestions across all calculators
 // Prices are approximate NA market values — live price fetched on selection
 
@@ -370,7 +372,17 @@ export const getStaticPrice = (name) => {
   if (!name) return null;
   const lower = name.toLowerCase();
   const item = COMMON_ITEMS.find(i => i.name.toLowerCase() === lower);
-  return item?.price || null;
+  if (item?.price) return item.price;
+  // Fallback: check raw fish vendor prices (covers 100+ fish not in COMMON_ITEMS)
+  const vendorPrice = FISH_VENDOR_PRICES[name];
+  if (vendorPrice) return vendorPrice;
+  // Fallback: "Dried X" → derive from raw fish vendor price
+  if (lower.startsWith('dried ')) {
+    const rawName = name.slice(6); // strip "Dried "
+    const rawPrice = FISH_VENDOR_PRICES[rawName];
+    if (rawPrice) return rawPrice;
+  }
+  return null;
 };
 
 /** Format silver values for display */
