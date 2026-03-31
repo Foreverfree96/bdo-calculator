@@ -1223,6 +1223,82 @@ const procROI = computed(() => {
   return ((procProfitPerBatch.value / procTotalInputCost.value) * 100).toFixed(1);
 });
 
+// ─── PROFILE SYSTEM ─────────────────────────────────────────────────────────
+const PROFILE_KEY = 'bdo-profiles';
+const makeEmptyProfile = () => ({
+  id: Date.now(),
+  name: '',
+  region: 'na',
+  cookingMastery: 0,
+  processingMastery: 0,
+  tradingLevelIndex: 50,
+  cp: 300,
+});
+
+const loadProfiles = () => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PROFILE_KEY));
+    if (raw && Array.isArray(raw.profiles)) return raw;
+  } catch {}
+  return { activeId: null, profiles: [] };
+};
+
+const profileData = ref(loadProfiles());
+watch(profileData, (v) => localStorage.setItem(PROFILE_KEY, JSON.stringify(v)), { deep: true });
+
+const profileOpen = ref(false);
+const profileEditId = ref(null);
+const profileForm = ref(makeEmptyProfile());
+
+const activeProfile = computed(() =>
+  profileData.value.profiles.find(p => p.id === profileData.value.activeId) || null
+);
+
+const applyProfile = (p) => {
+  craft.value.masteryLevel = Math.min(p.cookingMastery, 2000);
+  proc.value.masteryLevel = Math.min(p.processingMastery, 2000);
+  imp.value.mastery = p.cookingMastery;
+  imp.value.cp = p.cp;
+  trade.value.levelIndex = Math.max(0, Math.min(p.tradingLevelIndex, TRADING_LEVELS.length - 1));
+  mpRegion.value = p.region;
+  craftRegion.value = p.region;
+  enhRegion.value = p.region;
+  recipeRegion.value = p.region;
+  procRegion.value = p.region;
+};
+
+const saveProfile = () => {
+  const entry = { ...profileForm.value };
+  if (!entry.name.trim()) entry.name = 'Profile ' + (profileData.value.profiles.length + 1);
+  if (profileEditId.value != null) {
+    const idx = profileData.value.profiles.findIndex(p => p.id === profileEditId.value);
+    if (idx >= 0) { entry.id = profileEditId.value; profileData.value.profiles.splice(idx, 1, entry); }
+    profileEditId.value = null;
+  } else {
+    entry.id = Date.now();
+    profileData.value.profiles.push(entry);
+  }
+  profileForm.value = makeEmptyProfile();
+};
+
+const editProfile = (p) => {
+  profileForm.value = { ...p };
+  profileEditId.value = p.id;
+};
+
+const deleteProfile = (id) => {
+  profileData.value.profiles = profileData.value.profiles.filter(p => p.id !== id);
+  if (profileData.value.activeId === id) profileData.value.activeId = null;
+};
+
+const loadProfile = (p) => {
+  profileData.value.activeId = p.id;
+  applyProfile(p);
+};
+
+// Auto-apply active profile on startup
+if (activeProfile.value) applyProfile(activeProfile.value);
+
 // ─── FORMATTING ──────────────────────────────────────────────────────────────
 const silver = (n) => {
   if (n == null) return '—';
@@ -1240,7 +1316,71 @@ const silver = (n) => {
     <header class="header">
       <h1>BDO Profit Calculator</h1>
       <p class="subtitle">Black Desert Online — ROI & Silver Calculator</p>
+      <button class="btn-profile-toggle" @click="profileOpen = !profileOpen">
+        {{ profileOpen ? 'Hide Profiles' : 'Profiles' }}
+        <span v-if="activeProfile" class="profile-active-badge">{{ activeProfile.name }}</span>
+      </button>
     </header>
+
+    <div v-if="profileOpen" class="profile-panel">
+      <h3 class="sub-heading">Character Profiles</h3>
+
+      <!-- Active profile indicator -->
+      <p v-if="activeProfile" class="hint" style="margin-bottom:8px;">
+        Active: <strong style="color:#22c55e;">{{ activeProfile.name }}</strong>
+        ({{ activeProfile.region.toUpperCase() }}, Cooking {{ activeProfile.cookingMastery }}, Processing {{ activeProfile.processingMastery }}, CP {{ activeProfile.cp }})
+      </p>
+
+      <!-- Saved profiles list -->
+      <div v-if="profileData.profiles.length" class="profile-list">
+        <div v-for="p in profileData.profiles" :key="p.id" class="profile-item" :class="{ 'profile-item--active': p.id === profileData.activeId }">
+          <div class="profile-item-info">
+            <span class="profile-item-name">{{ p.name }}</span>
+            <span class="hint">{{ p.region.toUpperCase() }} · Cook {{ p.cookingMastery }} · Proc {{ p.processingMastery }} · Trade {{ TRADING_LEVELS[p.tradingLevelIndex]?.label || '?' }} · CP {{ p.cp }}</span>
+          </div>
+          <div class="profile-item-actions">
+            <button class="btn-load-trade" @click="loadProfile(p)">Apply</button>
+            <button class="btn-load-trade" @click="editProfile(p)">Edit</button>
+            <button class="btn-del-trade" @click="deleteProfile(p.id)">Del</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Create / Edit form -->
+      <details class="profile-form" :open="profileEditId != null">
+        <summary class="sub-heading" style="cursor:pointer;margin-top:10px;">{{ profileEditId != null ? 'Edit Profile' : 'New Profile' }}</summary>
+        <div class="field-row" style="margin-top:8px;">
+          <label class="field"><span>Name</span>
+            <input v-model="profileForm.name" placeholder="Character name" />
+          </label>
+          <label class="field"><span>Region</span>
+            <select v-model="profileForm.region" class="region-select">
+              <option value="na">NA</option><option value="eu">EU</option><option value="sea">SEA</option><option value="sa">SA</option>
+            </select>
+          </label>
+        </div>
+        <div class="field-row">
+          <label class="field"><span>Cooking Mastery <span class="hint">(0–3000)</span></span>
+            <input type="number" v-model.number="profileForm.cookingMastery" min="0" max="3000" />
+          </label>
+          <label class="field"><span>Processing Mastery <span class="hint">(0–2000)</span></span>
+            <input type="number" v-model.number="profileForm.processingMastery" min="0" max="2000" />
+          </label>
+        </div>
+        <div class="field-row">
+          <label class="field"><span>Trading Level: {{ TRADING_LEVELS[profileForm.tradingLevelIndex]?.label || '' }}</span>
+            <input type="range" v-model.number="profileForm.tradingLevelIndex" min="0" :max="TRADING_LEVELS.length - 1" class="trade-slider" />
+          </label>
+          <label class="field"><span>Contribution Points</span>
+            <input type="number" v-model.number="profileForm.cp" min="0" />
+          </label>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px;">
+          <button class="btn-save-trade" :disabled="false" @click="saveProfile">{{ profileEditId != null ? 'Update' : 'Save Profile' }}</button>
+          <button v-if="profileEditId != null" class="btn-load-trade" @click="profileEditId = null; profileForm = makeEmptyProfile()">Cancel</button>
+        </div>
+      </details>
+    </div>
 
     <nav class="tabs">
       <button :class="['tab', { active: tab === 'marketplace' }]" @click="tab = 'marketplace'">Marketplace</button>
@@ -2495,6 +2635,35 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   width: 18px; height: 18px; border-radius: 50%;
   background: #f59e0b; cursor: pointer; border: 2px solid #1a1a1a;
 }
+
+/* ── Profile system ── */
+.btn-profile-toggle {
+  margin-top: 8px; padding: 6px 16px; background: #1a1a1a; border: 1px solid #333;
+  color: #ccc; border-radius: 8px; cursor: pointer; font-size: 0.8rem; transition: all 0.2s;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.btn-profile-toggle:hover { border-color: #f59e0b; color: #f59e0b; }
+.profile-active-badge {
+  background: #14532d; color: #4ade80; font-size: 0.7rem; font-weight: 700;
+  padding: 2px 8px; border-radius: 4px;
+}
+.profile-panel {
+  background: #111; border: 1px solid #222; border-radius: 10px;
+  padding: 16px 20px; margin-bottom: 12px;
+}
+.profile-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.profile-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 8px 12px; background: #161616; border: 1px solid #222; border-radius: 8px;
+  flex-wrap: wrap;
+}
+.profile-item--active { border-color: #166534; background: #0f1a0f; }
+.profile-item-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 200px; }
+.profile-item-name { font-weight: 600; font-size: 0.9rem; color: #e5e5e5; }
+.profile-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.profile-form { margin-top: 6px; }
+.profile-form summary { list-style: none; }
+.profile-form summary::-webkit-details-marker { display: none; }
 
 @media (max-width: 600px) {
   .field-row { flex-direction: column; gap: 8px; }
