@@ -1289,10 +1289,15 @@ const saveProfile = () => {
   if (profileEditId.value != null) {
     const idx = profileData.value.profiles.findIndex(p => p.id === profileEditId.value);
     if (idx >= 0) { entry.id = profileEditId.value; profileData.value.profiles.splice(idx, 1, entry); }
+    // Auto-apply if this is the active profile
+    if (profileData.value.activeId === profileEditId.value) applyProfile(entry);
     profileEditId.value = null;
   } else {
     entry.id = Date.now();
     profileData.value.profiles.push(entry);
+    // Auto-apply newly created profile
+    profileData.value.activeId = entry.id;
+    applyProfile(entry);
   }
   profileForm.value = makeEmptyProfile();
 };
