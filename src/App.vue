@@ -220,7 +220,16 @@ const craft = ref({
   craftsPerSession: 1,
   masteryLevel: 0,
 });
+const craftType = ref('cooking'); // 'cooking' or 'alchemy'
 const craftRegion = ref('na');
+
+// When toggling cooking/alchemy, swap mastery from active profile
+watch(craftType, (type) => {
+  const p = profileData?.value?.profiles?.find(pr => pr.id === profileData.value.activeId);
+  if (p) {
+    craft.value.masteryLevel = Math.min(type === 'alchemy' ? (p.alchemyMastery || 0) : p.cookingMastery, 2000);
+  }
+});
 
 // Crafting finished item search
 const craftItemSearch = ref(itemSearchState());
@@ -1235,6 +1244,7 @@ const makeEmptyProfile = () => ({
   name: '',
   region: 'na',
   cookingMastery: 0,
+  alchemyMastery: 0,
   processingMastery: 0,
   tradingLevelIndex: 50,
   cp: 300,
@@ -1260,7 +1270,8 @@ const activeProfile = computed(() =>
 );
 
 const applyProfile = (p) => {
-  craft.value.masteryLevel = Math.min(p.cookingMastery, 2000);
+  const craftMastery = craftType.value === 'alchemy' ? (p.alchemyMastery || 0) : p.cookingMastery;
+  craft.value.masteryLevel = Math.min(craftMastery, 2000);
   proc.value.masteryLevel = Math.min(p.processingMastery, 2000);
   imp.value.mastery = p.cookingMastery;
   imp.value.cp = p.cp;
@@ -1341,7 +1352,7 @@ const silver = (n) => {
         <div v-for="p in profileData.profiles" :key="p.id" class="profile-item" :class="{ 'profile-item--active': p.id === profileData.activeId }">
           <div class="profile-item-info">
             <span class="profile-item-name">{{ p.name }}</span>
-            <span class="hint">{{ p.region.toUpperCase() }} · Cook {{ p.cookingMastery }} · Proc {{ p.processingMastery }} · Trade {{ TRADING_LEVELS[p.tradingLevelIndex]?.label || '?' }} · CP {{ p.cp }}</span>
+            <span class="hint">{{ p.region.toUpperCase() }} · Cook {{ p.cookingMastery }} · Alch {{ p.alchemyMastery || 0 }} · Proc {{ p.processingMastery }} · Trade {{ TRADING_LEVELS[p.tradingLevelIndex]?.label || '?' }} · CP {{ p.cp }}</span>
           </div>
           <div class="profile-item-actions">
             <button class="btn-load-trade" @click="loadProfile(p)">Apply</button>
@@ -1368,6 +1379,11 @@ const silver = (n) => {
           <label class="field"><span>Cooking Mastery <span class="hint">(0–3000)</span></span>
             <input type="number" v-model.number="profileForm.cookingMastery" min="0" max="3000" />
           </label>
+          <label class="field"><span>Alchemy Mastery <span class="hint">(0–2000)</span></span>
+            <input type="number" v-model.number="profileForm.alchemyMastery" min="0" max="2000" />
+          </label>
+        </div>
+        <div class="field-row">
           <label class="field"><span>Processing Mastery <span class="hint">(0–2000)</span></span>
             <input type="number" v-model.number="profileForm.processingMastery" min="0" max="2000" />
           </label>
@@ -1528,7 +1544,13 @@ const silver = (n) => {
 
         <div class="field-row">
           <div class="field">
-            <label>Cooking/Alchemy Mastery</label>
+            <label>
+              <span class="craft-type-toggle">
+                <button :class="['craft-type-btn', { active: craftType === 'cooking' }]" @click="craftType = 'cooking'">Cooking</button>
+                <button :class="['craft-type-btn', { active: craftType === 'alchemy' }]" @click="craftType = 'alchemy'">Alchemy</button>
+              </span>
+              Mastery
+            </label>
             <input type="number" v-model.number="craft.masteryLevel" min="0" max="2000" placeholder="e.g. 800" />
           </div>
           <div class="field">
@@ -2641,6 +2663,20 @@ input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   width: 18px; height: 18px; border-radius: 50%;
   background: #f59e0b; cursor: pointer; border: 2px solid #1a1a1a;
 }
+
+/* ── Cooking/Alchemy toggle ── */
+.craft-type-toggle {
+  display: inline-flex; gap: 0; margin-right: 6px; vertical-align: middle;
+}
+.craft-type-btn {
+  padding: 2px 10px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+  border: 1px solid #333; background: #1a1a1a; color: #666; cursor: pointer;
+  transition: all 0.2s; letter-spacing: 0.03em;
+}
+.craft-type-btn:first-child { border-radius: 4px 0 0 4px; }
+.craft-type-btn:last-child { border-radius: 0 4px 4px 0; border-left: none; }
+.craft-type-btn.active { background: #2a2a2a; color: #f59e0b; border-color: #f59e0b; }
+.craft-type-btn:hover:not(.active) { color: #ccc; border-color: #555; }
 
 /* ── Profile system ── */
 .btn-profile-toggle {
