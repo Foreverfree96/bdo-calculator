@@ -2,6 +2,8 @@
 // Docs: https://github.com/guy0090/api.arsha.io
 
 const BASE = 'https://api.arsha.io/v2';
+const CODEX_PROXY = 'https://api.codetabs.com/v1/proxy/?quest=';
+const CODEX_BASE = 'https://bdocodex.com';
 
 // Known NPC vendor prices — these items aren't on the Central Market
 const NPC_PRICES = {
@@ -73,11 +75,34 @@ export const fetchMarketPrice = async (itemId, region = 'na') => {
  * @returns {Promise<Array<{id: number, name: string, grade: number}>>}
  */
 export const searchMarketItems = async (name, region = 'na') => {
+  // 1. Try Arsha search API
   try {
     const res = await fetch(`${BASE}/${region}/util/search?lang=en&name=${encodeURIComponent(name)}`);
     if (res.ok) {
       const data = await res.json();
-      return Array.isArray(data) ? data : [];
+      if (Array.isArray(data) && data.length > 0) return data;
+    }
+  } catch { /* continue to fallback */ }
+  // 2. Fallback: BDO Codex item search → extract item IDs
+  try {
+    const url = `${CODEX_BASE}/query.php?a=items&l=us&q=${encodeURIComponent(name)}`;
+    const res = await fetch(`${CODEX_PROXY}${encodeURIComponent(url)}`);
+    if (res.ok) {
+      const raw = (await res.text()).replace(/^\uFEFF/, '');
+      const data = JSON.parse(raw);
+      if (data?.aaData?.length) {
+        const q = name.toLowerCase();
+        const results = [];
+        for (const row of data.aaData) {
+          const id = row[0];
+          const nameMatch = row[2]?.match(/<b>(?:<[^>]+>)*([^<]+)<\/b>/);
+          const itemName = nameMatch ? nameMatch[1].trim() : null;
+          if (itemName && itemName.toLowerCase().includes(q)) {
+            results.push({ id, name: itemName, grade: row[5] || 0 });
+          }
+        }
+        if (results.length > 0) return results.slice(0, 20);
+      }
     }
   } catch { /* ignore */ }
   return [];
