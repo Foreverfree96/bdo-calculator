@@ -4,7 +4,7 @@ import { searchRecipes, fetchRecipe, findRecipeIdByName, preloadRecipeIndex } fr
 import { fetchMarketPrice, fetchMarketPrices, searchMarketItems, fetchMinListedPrice, fetchItemFullData, fetchBestSellPrice } from './utils/arsha.js';
 import { getMasteryBonus, getBoxSellPrice, getBoxLimit, BOX_TIERS } from './utils/imperial.js';
 import { TRADING_LEVELS, ALL_TRADE_ITEMS, PICKUP_LOCATIONS, SELL_LOCATIONS, DISTANCE_BONUS, getBargainBonus, getCrateSellPrice } from './utils/trading.js';
-import { searchLocalItems, getStaticPrice } from './utils/items.js';
+import { searchLocalItems, getStaticPrice, getSubstitutes } from './utils/items.js';
 import { PROCESSING_CATEGORIES, PROCESSING_RECIPES, DRIED_FISH_IDS, FISH_VENDOR_PRICES } from './utils/processing.js';
 import RecipeMaterial from './components/RecipeMaterial.vue';
 
@@ -294,10 +294,12 @@ const selectCraftItem = async (item) => {
           qty: m.qty || 1,
           gathered: false,
           hasRecipe: !!m.hasRecipe,
+          isGroup: !!m.isGroup,
           subMaterials: [],
           showSubs: false,
           itemId: m.itemId || null,
           priceSource: null,
+          cheapestAlt: null,
         }));
         // Set search state queries for each material
         recipe.materials.forEach((m, i) => {
@@ -306,12 +308,12 @@ const selectCraftItem = async (item) => {
         });
         // Helper: try all price sources for a material
         const region = craftRegion.value;
-        const fetchMatPrice = async (name, itemId) => {
+        const fetchSinglePrice = async (name, itemId) => {
           // 1. Try by item ID (market + NPC vendor)
           if (itemId) {
             try {
               const data = await fetchMarketPrice(itemId, region);
-              if (data?.price) return { price: data.price, source: 'market' };
+              if (data?.price) return { price: data.price, source: 'market', name };
             } catch { /* continue */ }
           }
           // 2. Try marketplace name search
@@ -320,21 +322,41 @@ const selectCraftItem = async (item) => {
             const match = results.find(r => r.name.toLowerCase() === name.toLowerCase()) || results[0];
             if (match?.id) {
               const data = await fetchMarketPrice(match.id, region);
-              if (data?.price) return { price: data.price, source: 'market' };
+              if (data?.price) return { price: data.price, source: 'market', name };
             }
           } catch { /* continue */ }
           // 3. Fallback to static price from COMMON_ITEMS / fish vendor prices
           const staticPrice = getStaticPrice(name);
-          return staticPrice ? { price: staticPrice, source: 'static' } : null;
+          return staticPrice ? { price: staticPrice, source: 'static', name } : null;
+        };
+
+        const fetchMatPrice = async (name, itemId, isGroup) => {
+          // For group materials, check all substitutes and pick cheapest
+          if (isGroup && itemId) {
+            const subs = getSubstitutes(itemId);
+            if (subs && subs.length > 1) {
+              const prices = await Promise.all(subs.map(s => fetchSinglePrice(s.name, s.id)));
+              const valid = prices.filter(p => p && p.price > 0);
+              if (valid.length > 0) {
+                valid.sort((a, b) => a.price - b.price);
+                return { price: valid[0].price, source: valid[0].source, cheapestName: valid[0].name };
+              }
+            }
+          }
+          return fetchSinglePrice(name, itemId);
         };
 
         // Fetch live prices + sub-recipes in parallel
         await Promise.all(recipe.materials.map(async (m, i) => {
           try {
-            const result = await fetchMatPrice(m.name, m.itemId);
+            const result = await fetchMatPrice(m.name, m.itemId, m.isGroup);
             if (result) {
               craft.value.materials[i].cost = result.price;
               craft.value.materials[i].priceSource = result.source;
+              // If a cheaper substitute was found, show its name
+              if (result.cheapestName && result.cheapestName !== m.name) {
+                craft.value.materials[i].cheapestAlt = result.cheapestName;
+              }
             }
             // Fetch sub-recipe if this material is craftable
             if (m.hasRecipe) {
@@ -343,7 +365,7 @@ const selectCraftItem = async (item) => {
                 const subRecipe = await fetchRecipe(subId);
                 if (subRecipe?.materials?.length) {
                   const subs = await Promise.all(subRecipe.materials.map(async (sm) => {
-                    const subResult = await fetchMatPrice(sm.name, sm.itemId);
+                    const subResult = await fetchMatPrice(sm.name, sm.itemId, sm.isGroup);
                     return { name: sm.name, qty: sm.qty || 1, cost: subResult?.price || null, priceSource: subResult?.source || null, gathered: false };
                   }));
                   craft.value.materials[i].subMaterials = subs;
@@ -1589,6 +1611,7 @@ const silver = (n) => {
             </div>
             <input type="number" v-model.number="m.cost" class="mat-cost" :class="{ 'mat-gathered': m.gathered }" :disabled="m.gathered" placeholder="Cost each" />
             <span v-if="m.priceSource === 'static' && !m.gathered" class="hint" style="color:#ef4444;font-size:0.65rem;" title="Price from static estimate — API was unavailable">est.</span>
+            <span v-if="m.cheapestAlt" class="hint" style="color:#22c55e;font-size:0.65rem;" :title="'Cheapest substitute: ' + m.cheapestAlt">{{ m.cheapestAlt }}</span>
             <input type="number" v-model.number="m.qty" class="mat-qty" min="1" placeholder="Qty" />
             <button v-if="m.hasRecipe && m.subMaterials.length" class="mat-expand" :class="{ active: m.showSubs }" @click="m.showSubs = !m.showSubs" title="Show sub-materials">▾</button>
             <button class="mat-remove" @click="removeMaterial(i)" v-if="craft.materials.length > 1">x</button>

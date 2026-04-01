@@ -1,5 +1,45 @@
 import { FISH_VENDOR_PRICES } from './processing.js';
 
+// ═══ BDO COOKING SUBSTITUTION GROUPS ═══
+// When a recipe shows a "group" icon, any item in that group can be used.
+// Keyed by representative item IDs that BDO Codex uses for the group.
+export const SUBSTITUTION_GROUPS = {
+  // Grains (Corn, Wheat, Barley, Potato, Sweet Potato)
+  7005: [{ name: 'Corn', id: 7005 }, { name: 'Wheat', id: 7001 }, { name: 'Barley', id: 7002 }, { name: 'Potato', id: 7006 }, { name: 'Sweet Potato', id: 7007 }],
+  7001: [{ name: 'Wheat', id: 7001 }, { name: 'Corn', id: 7005 }, { name: 'Barley', id: 7002 }, { name: 'Potato', id: 7006 }, { name: 'Sweet Potato', id: 7007 }],
+  7002: [{ name: 'Barley', id: 7002 }, { name: 'Wheat', id: 7001 }, { name: 'Corn', id: 7005 }, { name: 'Potato', id: 7006 }, { name: 'Sweet Potato', id: 7007 }],
+  7006: [{ name: 'Potato', id: 7006 }, { name: 'Wheat', id: 7001 }, { name: 'Corn', id: 7005 }, { name: 'Barley', id: 7002 }, { name: 'Sweet Potato', id: 7007 }],
+  7007: [{ name: 'Sweet Potato', id: 7007 }, { name: 'Wheat', id: 7001 }, { name: 'Corn', id: 7005 }, { name: 'Barley', id: 7002 }, { name: 'Potato', id: 7006 }],
+  // Meat (Deer, Lamb, Fox, Wolf, Bear, Weasel, Lizard, Rhino, Lion, Cheetah, Scorpion, etc.)
+  7901: [{ name: 'Deer Meat', id: 7901 }, { name: 'Lamb Meat', id: 7902 }, { name: 'Fox Meat', id: 7903 }, { name: 'Wolf Meat', id: 7904 }, { name: 'Bear Meat', id: 7905 }, { name: 'Weasel Meat', id: 7906 }, { name: 'Lizard Meat', id: 7907 }, { name: 'Rhino Meat', id: 7909 }, { name: 'Lion Meat', id: 7910 }, { name: 'Cheetah Meat', id: 7911 }],
+  // Bird Meat (Chicken, Flamingo, Kuku, etc.)
+  7921: [{ name: 'Chicken Meat', id: 7921 }, { name: 'Flamingo Meat', id: 7922 }, { name: 'Kuku Bird Meat', id: 7923 }],
+  // Fish (any fish type — use cheapest available)
+  8001: [{ name: 'Mudskipper', id: 8001 }, { name: 'Sardine', id: 8063 }, { name: 'Herring', id: 8062 }, { name: 'Flatfish', id: 8060 }, { name: 'Filefish', id: 8034 }],
+  // Dried Fish (any dried fish)
+  8501: [{ name: 'Dried Mudskipper', id: 8501 }, { name: 'Dried Sardine', id: 8563 }, { name: 'Dried Herring', id: 8562 }, { name: 'Dried Flatfish', id: 8560 }, { name: 'Dried Filefish', id: 8534 }],
+  // Vegetables (Tomato, Paprika, Pumpkin, Cabbage, Olive)
+  7203: [{ name: 'Tomato', id: 7203 }, { name: 'Paprika', id: 7202 }, { name: 'Pumpkin', id: 7204 }, { name: 'Cabbage', id: 7207 }, { name: 'Olive', id: 7210 }],
+  7202: [{ name: 'Paprika', id: 7202 }, { name: 'Tomato', id: 7203 }, { name: 'Pumpkin', id: 7204 }, { name: 'Cabbage', id: 7207 }, { name: 'Olive', id: 7210 }],
+  // Fruits (Grape, Strawberry, Apple, Cherry, Pear, Banana)
+  7601: [{ name: 'Grape', id: 7601 }, { name: 'Strawberry', id: 7602 }, { name: 'Apple', id: 7603 }, { name: 'Cherry', id: 7604 }, { name: 'Pear', id: 7605 }, { name: 'Banana', id: 7606 }],
+  7602: [{ name: 'Strawberry', id: 7602 }, { name: 'Grape', id: 7601 }, { name: 'Apple', id: 7603 }, { name: 'Cherry', id: 7604 }, { name: 'Pear', id: 7605 }],
+  // Sugar / Honey
+  9002: [{ name: 'Sugar', id: 9002 }, { name: 'Honey', id: 7318 }],
+  // Cooking Wine / Fruits (sometimes interchangeable)
+  9003: [{ name: 'Cooking Wine', id: 9003 }, { name: 'Fruit Wine', id: 9201 }],
+  // Milk
+  7310: [{ name: 'Milk', id: 7310 }],
+  // Red Meat (interchangeable with regular meat in some recipes)
+  7908: [{ name: 'Scorpion Meat', id: 7908 }, { name: 'Lizard Meat', id: 7907 }, { name: 'Rhino Meat', id: 7909 }],
+  // Onion / Garlic (allium group)
+  7201: [{ name: 'Onion', id: 7201 }, { name: 'Garlic', id: 7205 }, { name: 'Hot Pepper', id: 7206 }],
+  7205: [{ name: 'Garlic', id: 7205 }, { name: 'Onion', id: 7201 }, { name: 'Hot Pepper', id: 7206 }],
+};
+
+/** Get the substitution group for an item ID, if any */
+export const getSubstitutes = (itemId) => SUBSTITUTION_GROUPS[itemId] || null;
+
 // Common BDO items for instant search suggestions across all calculators
 // Prices are approximate NA market values — live price fetched on selection
 
